@@ -11,3 +11,4 @@ A professional SaaS-style web application that automates meeting minutes and tra
 - **Clean Interface** - Modern black & white aesthetic inspired by OpenAI
 
 
+Demo Video Link: https://youtu.be/3sg3yXFlx8k?si=K0yFD0Tce0HjWUiI
