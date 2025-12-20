@@ -1,0 +1,18 @@
+{
+  "list_id": "68f23928e82c918d4efbdbd2",
+  "list_name": "Taran's Todo",
+  "cards": [
+    {
+      "id": "68f2392b2528fdbe41441b97",
+      "name": "Taran's Card",
+      "description": "",
+      "deadline": null
+    },
+    {
+      "id": "693f4c0f11d3d01b4e87191a",
+      "name": "Taran's Todo",
+      "description": "",
+      "deadline": null
+    }
+  ]
+}

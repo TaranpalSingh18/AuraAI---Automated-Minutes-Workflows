@@ -1,0 +1,8 @@
+langchain
+langchain-community
+dotenv
+faiss-cpu
+docx2txt
+langchain-google-genai
+composio 
+composio_langchain
