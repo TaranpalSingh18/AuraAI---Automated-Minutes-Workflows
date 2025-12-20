@@ -1,0 +1,70 @@
+.about-page {
+  width: 100%;
+}
+
+.about-hero {
+  background-color: var(--color-fg);
+  color: var(--color-bg);
+  padding: var(--space-12) var(--space-4);
+}
+
+.about-container {
+  max-width: 900px;
+  margin: 0 auto;
+}
+
+.about-hero h1 {
+  color: var(--color-bg);
+  margin-bottom: var(--space-4);
+}
+
+.lead {
+  font-size: 1.25rem;
+  line-height: 1.6;
+  color: var(--color-gray-medium);
+}
+
+.about-content {
+  padding: var(--space-12) var(--space-4);
+  background-color: var(--color-bg);
+}
+
+.content-block {
+  margin-bottom: var(--space-12);
+}
+
+.content-block h2 {
+  margin-bottom: var(--space-6);
+}
+
+.content-block p {
+  font-size: 1.025rem;
+  line-height: 1.8;
+  color: var(--color-gray-medium);
+}
+
+.why-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+  gap: var(--space-8);
+  margin-top: var(--space-8);
+}
+
+.why-item {
+  padding: var(--space-6);
+  border-left: 2px solid var(--color-fg);
+}
+
+.why-item h3 {
+  margin-bottom: var(--space-3);
+}
+
+.why-item p {
+  margin: 0;
+}
+
+@media (max-width: 768px) {
+  .why-grid {
+    grid-template-columns: 1fr;
+  }
+}

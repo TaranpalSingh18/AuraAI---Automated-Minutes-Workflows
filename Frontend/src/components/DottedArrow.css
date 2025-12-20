@@ -1,0 +1,62 @@
+.dotted-arrow {
+  position: absolute;
+  pointer-events: none;
+  z-index: 10;
+  opacity: 0;
+  transform: scale(0);
+}
+
+.dotted-arrow-svg {
+  width: 100%;
+  height: 100%;
+}
+
+.dotted-arrow-path {
+  stroke: #ffffff;
+  opacity: 1;
+}
+
+.dotted-arrow-head {
+  stroke: #ffffff;
+  opacity: 0;
+  transition: opacity 0.3s ease-out;
+}
+
+.dotted-arrow-head.visible {
+  opacity: 1;
+}
+
+.dotted-arrow-left {
+  width: 200px;
+  height: 20px;
+}
+
+.dotted-arrow-right {
+  width: 200px;
+  height: 20px;
+}
+
+.dotted-arrow-up {
+  width: 2px;
+  height: 100px;
+  margin-bottom: var(--space-4);
+}
+
+.dotted-arrow-down {
+  width: 2px;
+  height: 100px;
+  margin-top: var(--space-4);
+}
+
+@media (max-width: 1200px) {
+  .dotted-arrow-left,
+  .dotted-arrow-right {
+    width: 80px;
+  }
+  
+  .dotted-arrow-up,
+  .dotted-arrow-down {
+    height: 80px;
+  }
+}
+

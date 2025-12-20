@@ -1,0 +1,133 @@
+.auth-page {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: calc(100vh - 64px);
+  padding: var(--space-4);
+  background-color: var(--color-bg);
+}
+
+.auth-container {
+  width: 100%;
+  max-width: 400px;
+}
+
+.auth-box {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-8);
+  padding: var(--space-8);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  background-color: var(--color-bg);
+}
+
+.auth-header {
+  text-align: center;
+  margin-bottom: var(--space-4);
+}
+
+.auth-header h1 {
+  font-size: 1.75rem;
+  margin-bottom: var(--space-2);
+}
+
+.auth-header p {
+  color: var(--color-gray-medium);
+  font-size: 0.95rem;
+}
+
+.error-message {
+  padding: var(--space-4);
+  background-color: #fef2f2;
+  border: 1px solid #fecaca;
+  border-radius: var(--radius-md);
+  color: #7f1d1d;
+  font-size: 0.9rem;
+}
+
+.auth-form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+.form-group {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.form-group label {
+  font-size: 0.875rem;
+  font-weight: 500;
+  color: var(--color-fg);
+}
+
+.form-group input {
+  padding: 10px 12px;
+  font-size: 0.95rem;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  transition: all 0.2s ease;
+  font-family: var(--font-family-sans);
+}
+
+.form-group input:focus {
+  outline: none;
+  border-color: var(--color-fg);
+  box-shadow: 0 0 0 2px rgba(0, 0, 0, 0.05);
+}
+
+.form-group input:disabled {
+  background-color: var(--color-bg-darker);
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
+.form-group input[aria-invalid="true"] {
+  border-color: #ef4444;
+}
+
+.field-error {
+  font-size: 0.85rem;
+  color: #dc2626;
+}
+
+.auth-footer {
+  text-align: center;
+  padding-top: var(--space-4);
+  border-top: 1px solid var(--color-border);
+}
+
+.auth-footer p {
+  margin: 0;
+  font-size: 0.9rem;
+  color: var(--color-gray-medium);
+}
+
+.auth-link {
+  color: var(--color-fg);
+  font-weight: 600;
+  text-decoration: none;
+  background: none;
+  border: none;
+  cursor: pointer;
+  transition: color 0.2s ease;
+  font-family: var(--font-family-sans);
+  font-size: 0.9rem;
+}
+
+.auth-link:hover {
+  color: var(--color-gray-medium);
+}
+
+@media (max-width: 480px) {
+  .auth-box {
+    padding: var(--space-6);
+  }
+
+  .auth-header h1 {
+    font-size: 1.5rem;
+  }
+}

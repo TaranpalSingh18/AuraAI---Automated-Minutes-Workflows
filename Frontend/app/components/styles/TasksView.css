@@ -1,0 +1,75 @@
+.tasks-view {
+  padding: var(--space-8);
+}
+
+.view-header {
+  margin-bottom: var(--space-8);
+}
+
+.view-header h1 {
+  font-size: 2rem;
+  margin-bottom: var(--space-2);
+}
+
+.view-subtitle {
+  color: var(--color-gray-medium);
+  margin: 0;
+}
+
+.view-controls {
+  margin-bottom: var(--space-8);
+}
+
+.filter-buttons {
+  display: flex;
+  gap: var(--space-3);
+  flex-wrap: wrap;
+}
+
+.filter-btn {
+  padding: var(--space-3) var(--space-4);
+  background-color: transparent;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  font-size: 0.9rem;
+  font-weight: 500;
+  color: var(--color-gray-medium);
+  transition: all 0.2s ease;
+  font-family: var(--font-family-sans);
+}
+
+.filter-btn:hover {
+  border-color: var(--color-fg);
+  color: var(--color-fg);
+}
+
+.filter-btn.active {
+  background-color: var(--color-fg);
+  color: var(--color-bg);
+  border-color: var(--color-fg);
+}
+
+.tasks-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+.empty-state {
+  text-align: center;
+  padding: var(--space-10);
+  background-color: var(--color-bg-darker);
+  border-radius: var(--radius-lg);
+  color: var(--color-gray-medium);
+}
+
+@media (max-width: 768px) {
+  .tasks-view {
+    padding: var(--space-6);
+  }
+
+  .view-header h1 {
+    font-size: 1.5rem;
+  }
+}

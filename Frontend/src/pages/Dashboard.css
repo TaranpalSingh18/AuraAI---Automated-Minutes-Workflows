@@ -1,0 +1,16 @@
+.dashboard {
+  display: flex;
+  min-height: calc(100vh - 64px);
+  background-color: var(--color-bg);
+}
+
+.dashboard-content {
+  flex: 1;
+  overflow-y: auto;
+}
+
+@media (max-width: 768px) {
+  .dashboard {
+    flex-direction: column;
+  }
+}

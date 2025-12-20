@@ -1,0 +1,79 @@
+.aura-pointer {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 20px;
+  height: 20px;
+  pointer-events: none;
+  z-index: 9999;
+  mix-blend-mode: difference;
+  transition: opacity 0.2s ease;
+}
+
+.aura-pointer-dot {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  width: 8px;
+  height: 8px;
+  background-color: #ffffff;
+  border-radius: 50%;
+  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.aura-pointer-ring {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  width: 20px;
+  height: 20px;
+  border: 2px solid rgba(255, 255, 255, 0.5);
+  border-radius: 50%;
+  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.aura-pointer-hover .aura-pointer-dot {
+  width: 12px;
+  height: 12px;
+  background-color: #ffffff;
+}
+
+.aura-pointer-hover .aura-pointer-ring {
+  width: 40px;
+  height: 40px;
+  border-color: rgba(255, 255, 255, 0.8);
+  border-width: 2px;
+}
+
+/* Hide default cursor globally */
+* {
+  cursor: none !important;
+}
+
+/* Ensure interactive elements still work but use custom cursor */
+a,
+button,
+.btn,
+[role="button"],
+input[type="submit"],
+input[type="button"],
+input[type="reset"],
+select,
+textarea,
+label {
+  cursor: none !important;
+}
+
+/* Media query for touch devices - show default cursor */
+@media (hover: none) and (pointer: coarse) {
+  * {
+    cursor: auto !important;
+  }
+  
+  .aura-pointer {
+    display: none;
+  }
+}
+
