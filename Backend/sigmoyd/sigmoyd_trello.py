@@ -171,6 +171,82 @@ Query: {query}
     async def get_checklist(self, idBoard: str, query: str) -> Dict[str, Any]:
         resp = await self._exec_action("TRELLO_GET_BOARDS_CHECKLISTS_BY_ID_BOARD", {"idBoard": idBoard})
         return {"raw": resp}
+import asyncio
+from typing import Dict, Any
+
+
+    async def process_query(
+        query: str,
+        composio_api_key: str | None = None,
+        gemini_api_key: str | None = None
+    ) -> Dict[str, Any]:
+        """
+        Production-safe Sigmoyd Trello query processor.
+        Read-only operations only.
+        """
+    
+        try:
+            sig = SigmoydTrello(
+                composio_api_key=composio_api_key,
+                gemini_api_key=gemini_api_key
+            )
+    
+            # 1️⃣ detect board id
+            board_id = await sig.get_board_id(query)
+            if not board_id:
+                return {
+                    "success": False,
+                    "output": "",
+                    "error": "Could not detect Trello board ID from query"
+                }
+    
+            # 2️⃣ ask LLM what functions are needed
+            functions = await sig.get_task_functions(query)
+            if not functions:
+                return {
+                    "success": False,
+                    "output": "",
+                    "error": "Could not classify query intent"
+                }
+    
+            outputs = []
+    
+            # 3️⃣ execute functions safely
+            for fn in functions:
+                if fn == "get_all_actions":
+                    text = await sig.get_all_actions(board_id)
+                    outputs.append(text)
+    
+                elif fn == "get_deadline":
+                    text = await sig.get_deadline(board_id, query)
+                    if text:
+                        outputs.append(text)
+    
+                elif fn == "get_all_deadlines":
+                    text = await sig.get_all_deadlines(board_id)
+                    outputs.append(text)
+    
+                elif fn == "get_checklist":
+                    data = await sig.get_checklist(board_id, query)
+                    outputs.append(str(data))
+    
+                elif fn == "get_list_content":
+                    outputs.append("List content operation not enabled")
+    
+            final_output = "\n\n".join(o for o in outputs if o)
+    
+            return {
+                "success": True,
+                "output": final_output or "No data found",
+                "error": None
+            }
+    
+        except Exception as e:
+            return {
+                "success": False,
+                "output": "",
+                "error": str(e)
+            }
 
 
 # ---------- local test ----------
