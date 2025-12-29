@@ -1,72 +1,75 @@
 """
 Composio authentication service - handles OAuth connections for Trello
 """
-import sys
-import os
-from pathlib import Path
+# import sys
+# import os
+# from pathlib import Path
+# from typing import Optional, Dict, Any
+
+# # Add Composio path if it exists (for local development)
+# backend_dir = Path(__file__).parent
+# # Try Backend/composio/python first (local repository)
+# composio_path = backend_dir / "composio" / "python"
+# # Fallback to Model/composio/python if Backend path doesn't exist
+# if not composio_path.exists():
+#     composio_path = backend_dir.parent / "Model" / "composio" / "python"
+
+# # Try to import ComposioToolSet from installed packages FIRST (prioritize SDK over local repo)
+# ComposioToolSet = None
+# import_error_msg = None
+
+# # PRIORITY 1: Try from installed composio.tools.toolset (most reliable)
+# try:
+#     from composio.tools.toolset import ComposioToolSet
+# except ImportError:
+#     # PRIORITY 2: Try from installed composio package
+#     try:
+#         from composio import ComposioToolSet
+#     except ImportError:
+#         # PRIORITY 3: Try from composio_langchain (may have version issues)
+#         try:
+#             from composio_langchain import ComposioToolSet
+#         except ImportError:
+#             # PRIORITY 4: Fallback to local composio repository (if path exists)
+#             if composio_path.exists():
+#                 composio_path_str = str(composio_path.resolve())
+#                 if composio_path_str not in sys.path:
+#                     sys.path.insert(0, composio_path_str)
+                
+#                 # Remove composio modules to force reimport from local path
+#                 removed_modules = {}
+#                 modules_to_remove = [key for key in list(sys.modules.keys()) 
+#                                     if key.startswith('composio') or key.startswith('plugins.langchain')]
+                
+#                 for module_name in modules_to_remove:
+#                     if 'composio_auth' not in module_name:
+#                         removed_modules[module_name] = sys.modules[module_name]
+#                         del sys.modules[module_name]
+                
+#                 try:
+#                     from plugins.langchain.composio_langchain.toolset import ComposioToolSet
+#                 except ImportError as e:
+#                     import_error_msg = f"Local composio path exists but import failed: {str(e)}"
+#                     # Restore modules if import failed
+#                     for module_name, module_obj in removed_modules.items():
+#                         sys.modules[module_name] = module_obj
+
+# # Try to import App (may not be available in all composio versions)
+# try:
+#     from composio import App
+# except ImportError:
+#     App = None
+
+# # Try to import NoItemsFound
+# try:
+#     from composio.client.exceptions import NoItemsFound
+# except ImportError:
+#     # Fallback if NoItemsFound is not available
+#     class NoItemsFound(Exception):
+#         pass
 from typing import Optional, Dict, Any
-
-# Add Composio path if it exists (for local development)
-backend_dir = Path(__file__).parent
-# Try Backend/composio/python first (local repository)
-composio_path = backend_dir / "composio" / "python"
-# Fallback to Model/composio/python if Backend path doesn't exist
-if not composio_path.exists():
-    composio_path = backend_dir.parent / "Model" / "composio" / "python"
-
-# Try to import ComposioToolSet from installed packages FIRST (prioritize SDK over local repo)
-ComposioToolSet = None
-import_error_msg = None
-
-# PRIORITY 1: Try from installed composio.tools.toolset (most reliable)
-try:
-    from composio.tools.toolset import ComposioToolSet
-except ImportError:
-    # PRIORITY 2: Try from installed composio package
-    try:
-        from composio import ComposioToolSet
-    except ImportError:
-        # PRIORITY 3: Try from composio_langchain (may have version issues)
-        try:
-            from composio_langchain import ComposioToolSet
-        except ImportError:
-            # PRIORITY 4: Fallback to local composio repository (if path exists)
-            if composio_path.exists():
-                composio_path_str = str(composio_path.resolve())
-                if composio_path_str not in sys.path:
-                    sys.path.insert(0, composio_path_str)
-                
-                # Remove composio modules to force reimport from local path
-                removed_modules = {}
-                modules_to_remove = [key for key in list(sys.modules.keys()) 
-                                    if key.startswith('composio') or key.startswith('plugins.langchain')]
-                
-                for module_name in modules_to_remove:
-                    if 'composio_auth' not in module_name:
-                        removed_modules[module_name] = sys.modules[module_name]
-                        del sys.modules[module_name]
-                
-                try:
-                    from plugins.langchain.composio_langchain.toolset import ComposioToolSet
-                except ImportError as e:
-                    import_error_msg = f"Local composio path exists but import failed: {str(e)}"
-                    # Restore modules if import failed
-                    for module_name, module_obj in removed_modules.items():
-                        sys.modules[module_name] = module_obj
-
-# Try to import App (may not be available in all composio versions)
-try:
-    from composio import App
-except ImportError:
-    App = None
-
-# Try to import NoItemsFound
-try:
-    from composio.client.exceptions import NoItemsFound
-except ImportError:
-    # Fallback if NoItemsFound is not available
-    class NoItemsFound(Exception):
-        pass
+from composio import ComposioToolSet
+from composio.client.exceptions import NoItemsFound
 
 
 def initiate_trello_connection(api_key: str, redirect_url: Optional[str] = None) -> Dict[str, Any]:
