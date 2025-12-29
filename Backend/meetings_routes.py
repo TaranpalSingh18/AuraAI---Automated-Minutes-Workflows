@@ -4,6 +4,7 @@ from pydantic import BaseModel
 from bson import ObjectId
 from datetime import datetime
 from typing import List, Optional
+import os
 
 from auth.auth_routes import get_current_user
 from meetings_service import process_transcript_with_gemini
@@ -231,7 +232,12 @@ async def convert_action_item_to_task(
             )
         
         # Initialize converter
-        converter = MeetingTaskConverter(composio_api_key)
+
+        converter = MeetingTaskConverter(
+            trello_api_key=os.getenv("TRELLO_API_KEY"),
+            trello_token=os.getenv("TRELLO_API_TOKEN")
+        )
+
         
         # Convert action item to task
         result = converter.convert_action_item_to_task(
