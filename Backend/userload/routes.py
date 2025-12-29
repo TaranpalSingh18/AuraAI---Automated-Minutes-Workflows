@@ -13,6 +13,13 @@ from userload.trello_service import UserLoadTrelloService, database
 router = APIRouter(prefix="/userload", tags=["userload"])
 security = HTTPBearer()
 
+# --- Database hook (required by main.py) ---
+database = None
+
+def set_database(db):
+    global database
+    database = db
+
 
 # ---------- RESPONSE MODELS ----------
 
