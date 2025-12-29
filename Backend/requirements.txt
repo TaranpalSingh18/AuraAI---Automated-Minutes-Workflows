@@ -1,3 +1,4 @@
+composio
 fastapi
 uvicorn[standard]
 motor
