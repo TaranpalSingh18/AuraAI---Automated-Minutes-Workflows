@@ -1,136 +1,92 @@
 
-
-
 # sigmoyd_trello.py
 """
-Lightweight, robust Composio/Trello read-ops helper with LLM integration.
-
-Key points:
-- No hard-coded API keys. Read from env or pass keys explicitly.
-- Lazily initializes ComposioToolSet and LLM.
-- Provides async methods for:
-  - get_list_content
-  - get_deadline
-  - get_all_deadlines
-  - get_checklist
-  - get_all_actions (board snapshot)
-- Uses logging instead of prints. Good for production & debugging.
+Production-ready Composio + Trello read helper
+Safe for Render / FastAPI / async servers
 """
 
 from __future__ import annotations
 import os
 import re
 import json
-import sys
-import logging
 import ast
-from pathlib import Path
+import asyncio
+import logging
 from typing import Any, Dict, Optional, List
 from datetime import datetime, timedelta
 import pytz
 
-# Optional zoneinfo
+# ---------- logging ----------
+logger = logging.getLogger(__name__)
+logging.basicConfig(level=logging.INFO)
+
+# ---------- timezone ----------
 try:
     from zoneinfo import ZoneInfo
     HAVE_ZONEINFO = True
 except Exception:
     HAVE_ZONEINFO = False
 
-# LLM (Google Gemini) client
+DEFAULT_TIMEZONE = "Asia/Kolkata"
+
+# ---------- LLM ----------
 try:
     from langchain_google_genai import ChatGoogleGenerativeAI
 except Exception:
-    ChatGoogleGenerativeAI = None  # will raise if used without package
+    ChatGoogleGenerativeAI = None
 
-# Try composio imports with reasonable fallbacks
+# ---------- Composio ----------
 ComposioToolSet = None
 try:
-    from composio.tools.toolset import ComposioToolSet  # primary
+    from composio.tools.toolset import ComposioToolSet
 except Exception:
     try:
-        from composio import ComposioToolSet  # secondary
+        from composio import ComposioToolSet
     except Exception:
-        try:
-            from composio_langchain import ComposioToolSet  # tertiary
-        except Exception:
-            # Allow runtime error later when toolset is actually needed
-            ComposioToolSet = None
+        ComposioToolSet = None
 
-# Composio exception fallback
-try:
-    from composio.client.exceptions import NoItemsFound
-except Exception:
-    class NoItemsFound(Exception):
-        pass
-
-logger = logging.getLogger(__name__)
-logging.basicConfig(level=logging.INFO)
-
-# Config from environment (prefer to pass keys explicitly to functions instead)
-COMPOSIO_API_KEY = os.environ.get("COMPOSIO_API_KEY")
-GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
-DEFAULT_TIMEZONE = "Asia/Kolkata"
+COMPOSIO_API_KEY = os.getenv("COMPOSIO_API_KEY")
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
 
-def get_llm(gemini_api_key: Optional[str] = None):
-    """Return an LLM client (synchronous invoke style used in original code)."""
-    key = (gemini_api_key or GEMINI_API_KEY)
-    if not key:
+def get_llm(api_key: str):
+    if not api_key:
         return None
     if ChatGoogleGenerativeAI is None:
-        raise RuntimeError("langchain_google_genai.ChatGoogleGenerativeAI not available")
-    return ChatGoogleGenerativeAI(model="gemini-2.5-flash", api_key=key)
+        raise RuntimeError("langchain_google_genai not installed")
+    return ChatGoogleGenerativeAI(model="gemini-2.5-flash", api_key=api_key)
 
 
-def _iso_to_aware(dt_str: Optional[str], tz_name: str = DEFAULT_TIMEZONE) -> Optional[datetime]:
-    if not dt_str:
+def _iso_to_aware(dt: Optional[str]) -> Optional[datetime]:
+    if not dt:
         return None
-    s = dt_str
-    if s.endswith("Z"):
-        s = s[:-1] + "+00:00"
+    s = dt.replace("Z", "+00:00")
     try:
-        dt = datetime.fromisoformat(s)
+        d = datetime.fromisoformat(s)
     except Exception:
-        # common fallback
-        try:
-            dt = datetime.strptime(dt_str.split(".")[0], "%Y-%m-%dT%H:%M:%S")
-            # assume UTC
-            if HAVE_ZONEINFO:
-                dt = dt.replace(tzinfo=ZoneInfo("UTC"))
-            else:
-                dt = pytz.UTC.localize(dt)
-        except Exception:
-            return None
-    # convert to requested tz
-    try:
-        if HAVE_ZONEINFO:
-            tz = ZoneInfo(tz_name)
-        else:
-            tz = pytz.timezone(tz_name)
-        if dt.tzinfo is None:
-            # assume UTC if naive
-            if HAVE_ZONEINFO:
-                dt = dt.replace(tzinfo=ZoneInfo("UTC"))
-            else:
-                dt = pytz.UTC.localize(dt)
-        return dt.astimezone(tz)
-    except Exception:
-        return dt
+        return None
+    tz = ZoneInfo(DEFAULT_TIMEZONE) if HAVE_ZONEINFO else pytz.timezone(DEFAULT_TIMEZONE)
+    if d.tzinfo is None:
+        d = d.replace(tzinfo=pytz.UTC)
+    return d.astimezone(tz)
 
 
 class SigmoydTrello:
-    """Encapsulate Composio toolset and LLM operations for read-only Trello helpers."""
-
     def __init__(self, composio_api_key: Optional[str] = None, gemini_api_key: Optional[str] = None):
         self.composio_api_key = composio_api_key or COMPOSIO_API_KEY
         self.gemini_api_key = gemini_api_key or GEMINI_API_KEY
         self._toolset = None
         self._llm = None
 
-        if not self.composio_api_key:
-            logger.warning("COMPOSIO_API_KEY not provided. API calls will fail until provided.")
-        if not self.gemini_api_key:
-            logger.info("GEMINI_API_KEY not provided; LLM calls will be skipped where optional.")
+    @property
+    def toolset(self):
+        if self._toolset is None:
+            if ComposioToolSet is None:
+                raise RuntimeError("Composio SDK not installed")
+            if not self.composio_api_key:
+                raise RuntimeError("COMPOSIO_API_KEY missing")
+            self._toolset = ComposioToolSet(api_key=self.composio_api_key)
+        return self._toolset
 
     @property
     def llm(self):
@@ -138,515 +94,91 @@ class SigmoydTrello:
             self._llm = get_llm(self.gemini_api_key)
         return self._llm
 
-    @property
-    def toolset(self):
-        if self._toolset is None:
-            if ComposioToolSet is None:
-                raise RuntimeError("ComposioToolSet not importable. Install the composio SDK or provide a local path.")
-            if not self.composio_api_key:
-                raise RuntimeError("Composio API key required to initialize toolset.")
-            self._toolset = ComposioToolSet(api_key=self.composio_api_key)
-        return self._toolset
-
-    def _exec_action(self, action: str, params: Dict[str, Any]):
-        """Wrapper to call toolset.execute_action safely and return raw response."""
+    # ---------- SAFE EXECUTOR ----------
+    async def _exec_action(self, action: str, params: Dict[str, Any]):
         try:
-            return self.toolset.execute_action(params=params, action=action)
+            return await asyncio.to_thread(
+                self.toolset.execute_action,
+                action=action,
+                params=params,
+            )
         except Exception as e:
             logger.warning("Composio action %s failed: %s", action, e)
             return None
 
-    async def get_task_functions(self, query: str) -> List[str]:
-        """
-        Ask LLM which function(s) should run for a query.
-        Returns an ordered list of function names (strings).
-        """
+    async def _llm_invoke(self, prompt: str) -> str:
         if not self.llm:
-            raise RuntimeError("LLM not available")
-        prompt = f"""
-        Decide which of these functions best match the user query (return a Python list literal e.g. ["get_list_content"]):
-        functions = ["get_card_description","get_list_content","get_deadline","get_all_deadlines","get_board_content","get_card_comment","get_all_actions","get_checklist"]
-        Query: {query}
-        Return only the list.
-        """
-        resp = self.llm.invoke(prompt)
-        txt = (resp.content or "").strip()
+            raise RuntimeError("LLM not initialized")
+        resp = await asyncio.to_thread(self.llm.invoke, prompt)
+        return (resp.content or "").strip()
+
+    # ---------- FUNCTIONS ----------
+    async def get_task_functions(self, query: str) -> List[str]:
+        text = await self._llm_invoke(
+            f"""Return Python list of function names for query:
+functions = ["get_list_content","get_deadline","get_all_deadlines","get_checklist","get_all_actions"]
+Query: {query}
+"""
+        )
         try:
-            parsed = ast.literal_eval(txt)
-            if isinstance(parsed, (list, tuple)):
-                return [str(p) for p in parsed]
+            val = ast.literal_eval(text)
+            return list(val) if isinstance(val, (list, tuple)) else []
         except Exception:
-            # fallback: detect function names by substring (preserves order in prompt)
-            out = []
-            lower = txt.lower()
-            for fn in ["get_card_description","get_list_content","get_deadline","get_all_deadlines","get_board_content","get_card_comment","get_all_actions","get_checklist"]:
-                if fn.lower() in lower:
-                    out.append(fn)
-            return out
-        return []
+            return []
 
     async def get_board_id(self, query: str) -> Optional[str]:
-        """Extract Board ID from user query using a quick regex or LLM fallback."""
-        # quick regex
-        m = re.search(r'(?:board[_\s-]*id|bid)\s*[:=]?\s*([A-Za-z0-9_\-:.]{4,})', query, flags=re.IGNORECASE)
+        m = re.search(r"(?:board[_\s-]*id|bid)\s*[:=]?\s*([A-Za-z0-9_\-:.]+)", query, re.I)
         if m:
             return m.group(1)
-        # try the LLM if available
         if self.llm:
-            prompt = f"Extract Board_ID from the query below and return only the id.\nQuery: {query}"
-            try:
-                resp = self.llm.invoke(prompt)
-                out = (resp.content or "").strip()
-                # simple heuristics to pull id
-                m2 = re.search(r'([A-Za-z0-9_\-:.]{4,})', out)
-                if m2:
-                    return m2.group(1)
-                return out or None
-            except Exception:
-                return None
+            out = await self._llm_invoke(f"Extract board id only: {query}")
+            m2 = re.search(r"([A-Za-z0-9_\-:.]+)", out)
+            return m2.group(1) if m2 else None
         return None
 
-    async def get_list_content(self, idBoard: str, query: str) -> Dict[str, Any]:
-        """
-        Get all card names (and simple descriptions) for a list whose name is extracted from `query`.
-        """
-        if not idBoard:
-            return {"status": "error", "reason": "idBoard required"}
-        # try to extract list name via LLM (if available) else attempt heuristics
-        list_name = None
-        if self.llm:
-            p = f"Extract only the list name from this query (no extra text): {query}"
-            try:
-                list_name = (self.llm.invoke(p).content or "").strip()
-            except Exception:
-                list_name = None
-        if not list_name:
-            # heuristics: look for 'list <name>' or quoted text
-            m = re.search(r"(?:list|List)\s+['\"]?([^'\"\n,]+)['\"]?", query)
-            if m:
-                list_name = m.group(1).strip()
-
-        # fetch lists for board
-        resp = self._exec_action("TRELLO_GET_BOARDS_LISTS_BY_ID_BOARD", {"idBoard": idBoard})
-        if not resp:
-            return {"status": "error", "reason": "Failed to fetch lists"}
-        lists = []
-        try:
-            data = resp.get("data", {}) if isinstance(resp, dict) else resp
-            lists = data.get("details") if isinstance(data, dict) and "details" in data else (data.get("lists") or data)
-            if not isinstance(lists, list):
-                lists = [lists]
-        except Exception:
-            lists = []
-
-        # map name->id
-        name_to_id = {}
-        for lst in lists:
-            if isinstance(lst, dict):
-                name = lst.get("name", "")
-                lid = lst.get("id")
-                if name and lid:
-                    name_to_id[name] = lid
-
-        # attempt to find a match (exact, case-insensitive, contains)
-        list_id = None
-        matched_name = None
-        if list_name and list_name in name_to_id:
-            list_id = name_to_id[list_name]; matched_name = list_name
-        else:
-            lower_map = {k.lower(): k for k in name_to_id}
-            if list_name and list_name.lower() in lower_map:
-                matched_name = lower_map[list_name.lower()]; list_id = name_to_id[matched_name]
-            else:
-                # try substring match
-                for k in name_to_id:
-                    if list_name and (list_name.lower() in k.lower() or k.lower() in list_name.lower()):
-                        matched_name = k; list_id = name_to_id[k]; break
-
-        if not list_id:
-            return {"status": "not_found", "available_lists": list(name_to_id.keys()), "extracted_name": list_name}
-
-        # fetch cards for list
-        cards_resp = self._exec_action("TRELLO_GET_LISTS_CARDS_BY_ID_LIST", {"idList": list_id})
-        cards = []
-        try:
-            if isinstance(cards_resp, dict):
-                cdata = cards_resp.get("data", {}) if "data" in cards_resp else cards_resp
-                cards = cdata.get("details") if isinstance(cdata, dict) and "details" in cdata else (cdata.get("cards") or cdata)
-            elif isinstance(cards_resp, list):
-                cards = cards_resp
-            if not isinstance(cards, list):
-                cards = [cards]
-        except Exception:
-            cards = []
-
-        tasks = []
-        for c in cards:
-            if not isinstance(c, dict):
-                continue
-            # try to gather checklist items first if directly present
-            if "checkItems" in c and isinstance(c["checkItems"], list):
-                tasks.extend([it.get("name") for it in c["checkItems"] if isinstance(it, dict) and it.get("name")])
-                continue
-            # otherwise attempt to fetch checklists per card
-            cid = c.get("id")
-            if not cid:
-                continue
-            # try to see if card has checklists embedded
-            try:
-                chk_resp = self._exec_action("TRELLO_GET_CARDS_CHECKLISTS_BY_ID_CARD", {"idCard": cid})
-                items = []
-                if isinstance(chk_resp, list):
-                    for chk in chk_resp:
-                        if isinstance(chk, dict):
-                            for it in (chk.get("checkItems") or chk.get("items") or []):
-                                if isinstance(it, dict) and it.get("name"):
-                                    items.append(it["name"])
-                elif isinstance(chk_resp, dict):
-                    data = chk_resp.get("data") or chk_resp
-                    cand = data.get("details") or data.get("checklists") or data
-                    if isinstance(cand, list):
-                        for chk in cand:
-                            if isinstance(chk, dict):
-                                for it in (chk.get("checkItems") or chk.get("items") or []):
-                                    if isinstance(it, dict) and it.get("name"):
-                                        items.append(it["name"])
-                if items:
-                    tasks.extend(items)
-            except Exception:
-                continue
-
-        return {"status": "success", "list_name": matched_name or list_name, "list_id": list_id, "tasks": tasks, "total_tasks": len(tasks)}
-
-    async def get_deadline(self, idBoard: str, query: str) -> Optional[str]:
-        """Return a human-friendly summary for matching card name deadlines (uses LLM optionally)."""
-        if not idBoard:
-            return None
-        # extract card name
-        card_name = None
-        if self.llm:
-            try:
-                resp = self.llm.invoke(f"Extract only the card name from: {query}")
-                card_name = (resp.content or "").strip()
-            except Exception:
-                card_name = None
-        if not card_name:
-            m = re.search(r'card\s+["\']?([^"\']+)["\']?', query, flags=re.IGNORECASE)
-            if m:
-                card_name = m.group(1).strip()
-        if not card_name:
-            return None
-
-        # fetch all cards on board
-        cards_resp = self._exec_action("TRELLO_GET_BOARDS_CARDS_BY_ID_BOARD", {"idBoard": idBoard})
-        cards = []
-        try:
-            if isinstance(cards_resp, dict):
-                data = cards_resp.get("data") or cards_resp
-                cards = data.get("details") or data.get("items") or data
-            elif isinstance(cards_resp, list):
-                cards = cards_resp
-            if not isinstance(cards, list):
-                cards = [cards]
-        except Exception:
-            cards = []
-
-        # timezone now
-        if HAVE_ZONEINFO:
-            now = datetime.now(ZoneInfo(DEFAULT_TIMEZONE))
-        else:
-            now = datetime.now(pytz.timezone(DEFAULT_TIMEZONE))
-
-        matches = []
-        for c in cards:
-            if not isinstance(c, dict):
-                continue
-            name = c.get("name", "")
-            if not name:
-                continue
-            if card_name.lower() in name.lower() or name.lower() == card_name.lower():
-                due_raw = c.get("due")
-                due_ist = _iso_to_aware(due_raw)
-                time_left = (due_ist - now) if due_ist else None
-                matches.append({
-                    "id": c.get("id"),
-                    "card_name": name,
-                    "deadline_ist": due_ist.isoformat() if due_ist else None,
-                    "time_left": time_left
-                })
-        if not matches:
-            return f"No matches for '{card_name}' on board {idBoard}."
-
-        # format result; optionally ask LLM to produce friendly summary
-        def fmt_timedelta(td: Optional[timedelta]) -> str:
-            if td is None:
-                return "No deadline assigned"
-            total = int(td.total_seconds())
-            sign = "-" if total < 0 else ""
-            total = abs(total)
-            d, r = divmod(total, 86400)
-            h, r = divmod(r, 3600)
-            m, s = divmod(r, 60)
-            parts = []
-            if d: parts.append(f"{d}d")
-            if h: parts.append(f"{h}h")
-            if m: parts.append(f"{m}m")
-            if not parts: parts.append(f"{s}s")
-            return sign + " ".join(parts)
-
-        matches_sorted = sorted(matches, key=lambda x: x["time_left"] if x["time_left"] is not None else timedelta.max)
-        lines = []
-        for m in matches_sorted:
-            lines.append(f"Card: {m['card_name']}, Deadline(IST): {m['deadline_ist'] or 'No deadline'}, Time Left: {fmt_timedelta(m['time_left'])}")
-
-        block = "\n".join(lines)
-        if self.llm:
-            prompt = f"Summarize these deadlines and make them human-friendly:\n{block}\nReturn a short bullet list."
-            try:
-                resp = self.llm.invoke(prompt)
-                return (resp.content or "").strip()
-            except Exception:
-                return block
-        return block
-
-    async def get_all_deadlines(self, idBoard: str, query: str) -> Optional[str]:
-        """Return a sorted, human-friendly summary of all deadlines on a board (LLM-enhanced if available)."""
-        if not idBoard:
-            return None
-        resp = self._exec_action("TRELLO_GET_BOARDS_CARDS_BY_ID_BOARD", {"idBoard": idBoard})
-        cards = []
-        try:
-            if isinstance(resp, dict):
-                data = resp.get("data") or resp
-                cards = data.get("details") or data.get("items") or data
-            elif isinstance(resp, list):
-                cards = resp
-            if not isinstance(cards, list):
-                cards = [cards]
-        except Exception:
-            cards = []
-
-        if HAVE_ZONEINFO:
-            now = datetime.now(ZoneInfo(DEFAULT_TIMEZONE))
-        else:
-            now = datetime.now(pytz.timezone(DEFAULT_TIMEZONE))
-
-        matches = []
-        for c in cards:
-            if not isinstance(c, dict):
-                continue
-            due_raw = c.get("due")
-            due_ist = _iso_to_aware(due_raw)
-            if due_ist:
-                matches.append({
-                    "id": c.get("id"),
-                    "name": c.get("name"),
-                    "deadline_ist": due_ist.isoformat(),
-                    "time_left": (due_ist - now)
-                })
-        if not matches:
-            return "No deadlines found on this board."
-
-        matches_sorted = sorted(matches, key=lambda x: x["time_left"] if x["time_left"] is not None else timedelta.max)
-        lines = []
-        for m in matches_sorted:
-            tl = m["time_left"]
-            days = getattr(tl, "days", None)
-            lines.append(f"Card: {m['name']}, Deadline(IST): {m['deadline_ist']}, Time Left: {tl}")
-
-        block = "\n".join(lines)
-        if self.llm:
-            try:
-                resp = self.llm.invoke(f"Summarize these deadlines:\n{block}\nReturn short bullet list.")
-                return (resp.content or "").strip()
-            except Exception:
-                return block
-        return block
-
-    async def get_checklist(self, idBoard: str, query: str) -> Dict[str, Any]:
-        """
-        Fetch checklists for a board and return structured results + LLM summary (if available).
-        Returns dict {"results": {card_id: {...}}, "llm_summary": str|None}
-        """
-        if not idBoard:
-            return {"status": "error", "reason": "idBoard required", "results": {}, "llm_summary": None}
-        raw = self._exec_action("TRELLO_GET_BOARDS_CHECKLISTS_BY_ID_BOARD", {"idBoard": idBoard})
-        # Attempt to parse varied shapes into list of checklist dicts
-        checklists = []
-        try:
-            if isinstance(raw, dict):
-                data = raw.get("data") or raw
-                if isinstance(data, dict) and "details" in data:
-                    checklists = data.get("details") or []
-                elif isinstance(data, list):
-                    checklists = data
-                elif "checklists" in data:
-                    checklists = data.get("checklists") or []
-            elif isinstance(raw, list):
-                checklists = raw
-            else:
-                # plain text fallback - return as summary
-                if isinstance(raw, str):
-                    if self.llm:
-                        try:
-                            summary = self.llm.invoke(f"Summarize these checklists text:\n{raw}")
-                            return {"results": {}, "llm_summary": (summary.content or "").strip()}
-                        except Exception:
-                            return {"results": {}, "llm_summary": raw}
-        except Exception:
-            checklists = []
-
-        results = {}
-        for chk in (checklists or []):
-            if not isinstance(chk, dict):
-                continue
-            cid = chk.get("idCard") or chk.get("cardId")
-            items = chk.get("checkItems") or chk.get("items") or []
-            normalized_items = []
-            if isinstance(items, list):
-                for it in items:
-                    if isinstance(it, dict):
-                        normalized_items.append({
-                            "item_id": it.get("id") or it.get("idChecklist") or None,
-                            "text": it.get("name") or it.get("text") or None,
-                            "state": it.get("state") or None
-                        })
-            results.setdefault(cid or "<unknown_card>", {"card_name": None, "deadline": None, "tasks": []})
-            results[cid or "<unknown_card>"]["tasks"].extend(normalized_items)
-
-        # enrich with card name & deadline if possible
-        try:
-            cards_resp = self._exec_action("TRELLO_GET_BOARDS_CARDS_BY_ID_BOARD", {"idBoard": idBoard})
-            cards = []
-            if isinstance(cards_resp, dict):
-                data = cards_resp.get("data") or cards_resp
-                cards = data.get("details") or data.get("items") or data
-            elif isinstance(cards_resp, list):
-                cards = cards_resp
-            if not isinstance(cards, list):
-                cards = [cards]
-            card_map = {c.get("id"): c for c in cards if isinstance(c, dict) and c.get("id")}
-            for cid, entry in list(results.items()):
-                if cid in card_map:
-                    entry["card_name"] = card_map[cid].get("name")
-                    entry["deadline"] = card_map[cid].get("due")
-        except Exception:
-            pass
-
-        # LLM summary
-        llm_summary = None
-        if self.llm:
-            try:
-                block_lines = []
-                for cid, info in results.items():
-                    card_name = info.get("card_name") or cid
-                    block_lines.append(f"Card: {card_name} (ID: {cid})")
-                    for t in info.get("tasks", []):
-                        block_lines.append(f"  - {t.get('text')} (state: {t.get('state')})")
-                block = "\n".join(block_lines)[:2000]
-                resp = self.llm.invoke(f"Summarize these checklist items for user:\n{block}\nReturn a short list.")
-                llm_summary = (resp.content or "").strip()
-            except Exception:
-                llm_summary = None
-
-        return {"status": "success", "results": results, "llm_summary": llm_summary}
-
     async def get_all_actions(self, idBoard: str) -> str:
-        """
-        Produce a human readable snapshot of the board: lists, cards, descriptions, deadlines, members.
-        Returns a plain text snapshot (LLMless).
-        """
-        if not idBoard:
-            raise ValueError("idBoard required")
-
-        # fetch lists
-        lists_resp = self._exec_action("TRELLO_GET_BOARDS_LISTS_BY_ID_BOARD", {"idBoard": idBoard}) or {}
-        lists = []
-        try:
-            data = lists_resp.get("data") or lists_resp
-            lists = data.get("details") or data.get("lists") or data
-            if not isinstance(lists, list):
-                lists = [lists]
-        except Exception:
-            lists = []
-
-        # fetch all cards as fallback
-        cards_resp = self._exec_action("TRELLO_GET_BOARDS_CARDS_BY_ID_BOARD", {"idBoard": idBoard}) or {}
-        cards = []
-        try:
-            data = cards_resp.get("data") or cards_resp
-            cards = data.get("details") or data.get("items") or data
-            if not isinstance(cards, list):
-                cards = [cards]
-        except Exception:
-            cards = []
-
-        # build map: list_id -> cards
-        by_list = {}
-        for c in cards:
-            if not isinstance(c, dict):
-                continue
-            lid = c.get("idList") or c.get("listID") or "<no-list>"
-            by_list.setdefault(lid, []).append(c)
-
-        # format snapshot
-        lines = []
-        board_name = None
-        # try to extract board name from lists_resp
-        try:
-            if isinstance(lists_resp, dict):
-                board = (lists_resp.get("data") or {}).get("board") or lists_resp.get("board")
-                if isinstance(board, dict):
-                    board_name = board.get("name")
-                elif isinstance(board, str):
-                    board_name = board
-        except Exception:
-            board_name = None
-
-        lines.append(f"Board: {board_name or '<unnamed>'} (ID: {idBoard})")
-        lines.append("")
-        lines.append("Lists & Cards:")
-        for lst in lists:
-            if not isinstance(lst, dict):
-                continue
-            lid = lst.get("id")
-            lname = lst.get("name") or "<unnamed list>"
-            lines.append(f"- {lname} (List ID: `{lid}`)")
-            card_list = by_list.get(lid) or []
-            if not card_list:
-                lines.append("    - (no cards)")
-                continue
-            for c in card_list:
-                cid = c.get("id")
-                cname = c.get("name") or "<unnamed card>"
-                desc = (c.get("desc") or "")[:300]
-                due = c.get("due") or c.get("deadline") or "<none>"
-                lines.append(f"    - Card: {cname} (ID: `{cid}`)")
-                lines.append(f"        - Description: {desc if desc else '<none>'}")
-                lines.append(f"        - Deadline: {due}")
-            lines.append("")
-
+        resp = await self._exec_action("TRELLO_GET_BOARDS_CARDS_BY_ID_BOARD", {"idBoard": idBoard})
+        cards = resp if isinstance(resp, list) else (resp or {}).get("data", {}).get("details", [])
+        lines = [f"Board ID: {idBoard}"]
+        for c in cards or []:
+            lines.append(f"- {c.get('name')} | Due: {c.get('due')}")
         return "\n".join(lines)
 
+    async def get_deadline(self, idBoard: str, query: str) -> Optional[str]:
+        card_name = await self._llm_invoke(f"Extract card name only: {query}")
+        resp = await self._exec_action("TRELLO_GET_BOARDS_CARDS_BY_ID_BOARD", {"idBoard": idBoard})
+        cards = resp if isinstance(resp, list) else (resp or {}).get("data", {}).get("details", [])
+        now = _iso_to_aware(datetime.utcnow().isoformat())
+        out = []
+        for c in cards or []:
+            if card_name.lower() in (c.get("name") or "").lower():
+                due = _iso_to_aware(c.get("due"))
+                if due:
+                    out.append(f"{c['name']} → {due} ({due - now})")
+        return "\n".join(out) if out else None
 
-# Minimal example usage (only runs when executed directly)
+    async def get_all_deadlines(self, idBoard: str) -> str:
+        resp = await self._exec_action("TRELLO_GET_BOARDS_CARDS_BY_ID_BOARD", {"idBoard": idBoard})
+        cards = resp if isinstance(resp, list) else (resp or {}).get("data", {}).get("details", [])
+        items = []
+        for c in cards or []:
+            due = _iso_to_aware(c.get("due"))
+            if due:
+                items.append((due, c["name"]))
+        items.sort(key=lambda x: x[0])
+        return "\n".join(f"{n} → {d}" for d, n in items)
+
+    async def get_checklist(self, idBoard: str, query: str) -> Dict[str, Any]:
+        resp = await self._exec_action("TRELLO_GET_BOARDS_CHECKLISTS_BY_ID_BOARD", {"idBoard": idBoard})
+        return {"raw": resp}
+
+
+# ---------- local test ----------
 if __name__ == "__main__":
     import asyncio
-    logging.getLogger().setLevel(logging.DEBUG)
-    api_key = os.environ.get("COMPOSIO_API_KEY")
-    gemini = os.environ.get("GEMINI_API_KEY")
-    if not api_key:
-        logger.warning("COMPOSIO_API_KEY not set. Example will not run Composio calls.")
-    s = SigmoydTrello(composio_api_key=api_key, gemini_api_key=gemini)
-    async def demo():
-        # small demo - does not call Composio if no key
-        try:
-            bid = "your-board-id-here"
-            out = await s.get_all_actions(bid)
-            print(out)
-        except Exception as e:
-            logger.error("Demo failed: %s", e)
-    asyncio.run(demo())
+    s = SigmoydTrello()
+    asyncio.run(s.get_all_actions("BOARD_ID"))
+
 
 
 
