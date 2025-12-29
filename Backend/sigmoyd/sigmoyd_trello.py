@@ -171,8 +171,8 @@ Query: {query}
     async def get_checklist(self, idBoard: str, query: str) -> Dict[str, Any]:
         resp = await self._exec_action("TRELLO_GET_BOARDS_CHECKLISTS_BY_ID_BOARD", {"idBoard": idBoard})
         return {"raw": resp}
-import asyncio
-from typing import Dict, Any
+# import asyncio
+# from typing import Dict, Any
 
 
     async def process_query(
