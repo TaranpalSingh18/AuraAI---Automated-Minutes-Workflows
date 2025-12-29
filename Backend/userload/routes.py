@@ -54,7 +54,7 @@ async def fetch_user_tasks(
     current_user: dict = Depends(get_current_user)
 ):
     """
-    Fetch checklist tasks from "{User}'s Todo" card
+    Fetch ALL checklist tasks from ALL cards on the board
     """
 
     if not board_id:
@@ -63,11 +63,9 @@ async def fetch_user_tasks(
             detail="board_id is required"
         )
 
-    user_name = current_user.get("name", "User")
-
     try:
         service = UserLoadTrelloService(board_id=board_id)
-        tasks = service.get_user_tasks(user_name)
+        tasks = service.get_all_tasks()
 
         return FetchTasksResponse(
             tasks=[
@@ -86,6 +84,7 @@ async def fetch_user_tasks(
             status_code=500,
             detail=str(e)
         )
+
 
 
 # ---------- UPDATE TASK STATUS ----------
