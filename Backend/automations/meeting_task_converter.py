@@ -1,40 +1,103 @@
-
-
 """
 Meeting Task Converter Automation
 Converts meeting action items to Trello checklist items
-RENDER-SAFE VERSION (no local composio hacks)
+RENDER-SAFE VERSION (robust imports + helpful errors)
 """
 
 from typing import Optional, Dict, Any
 from datetime import datetime
 import json
 import re
+import logging
 
-# ✅ OFFICIAL Composio SDK ONLY
-from composio import ComposioClient
-from composio.client.exceptions import NoItemsFound
+logger = logging.getLogger(__name__)
+
+# --- Robust Composio import --- #
+_COMPOSIO_AVAILABLE = False
+ComposioClient = None
+NoItemsFound = Exception
+
+# Try multiple import paths so this module can be imported even if
+# the installed composio package exposes a different layout.
+try:
+    try:
+        # Preferred: composio exports ComposioClient at top-level
+        from composio import ComposioClient  # type: ignore
+        from composio.client.exceptions import NoItemsFound  # type: ignore
+    except Exception:
+        # Fallback: composio.client module exposes client class
+        from composio.client import ComposioClient  # type: ignore
+        from composio.client.exceptions import NoItemsFound  # type: ignore
+
+    _COMPOSIO_AVAILABLE = True
+    logger.debug("Composio SDK import successful.")
+except Exception as e:
+    # Keep module import-safe: do not raise here. Will raise on instantiation if used.
+    ComposioClient = None
+    NoItemsFound = Exception
+    _COMPOSIO_AVAILABLE = False
+    logger.warning(
+        "Composio SDK not importable in this environment. "
+        "MeetingTaskConverter will raise if instantiated. "
+        f"Import error: {e}"
+    )
 
 
 class MeetingTaskConverter:
+    """
+    Thin wrapper around Composio -> Trello actions.
+
+    NOTE: This class raises at instantiation time if the Composio SDK
+    is not available. This keeps module import safe (so e.g. uvicorn
+    can start even if the optional dependency is missing).
+    """
+
     def __init__(self, composio_api_key: str):
-        if not composio_api_key:
+        if not _COMPOSIO_AVAILABLE:
+            raise RuntimeError(
+                "Composio SDK is not available in this environment. "
+                "To enable automations install the correct Composio package "
+                "or deploy with the service that provides the Composio SDK. "
+                "If you do not need Trello automations for this deployment, "
+                "avoid instantiating MeetingTaskConverter."
+            )
+
+        if not composio_api_key or not composio_api_key.strip():
             raise ValueError("Composio API key is required")
 
-        self.client = ComposioClient(api_key=composio_api_key)
+        composio_api_key = composio_api_key.strip()
+
+        try:
+            self.client = ComposioClient(api_key=composio_api_key)
+        except Exception as e:
+            logger.exception("Failed to instantiate ComposioClient.")
+            raise RuntimeError(f"Failed to initialize Composio client: {e}")
 
         # Get entity
-        self.entity = self.client.get_entity()
+        try:
+            self.entity = self.client.get_entity()
+        except Exception as e:
+            logger.exception("Failed to get entity from Composio client.")
+            raise RuntimeError(f"Failed to get entity: {e}")
 
         # Ensure Trello is connected
         try:
             conn = self.entity.get_connection(app="trello")
-            if conn.status != "ACTIVE":
-                raise RuntimeError("Trello is not connected")
+            if not conn or getattr(conn, "status", None) != "ACTIVE":
+                raise RuntimeError("Trello is not connected (connection not ACTIVE)")
         except NoItemsFound:
-            raise RuntimeError("Trello is not connected")
+            raise RuntimeError("Trello is not connected (NoItemsFound)")
+        except Exception as e:
+            # If the underlying SDK raises something else, surface a helpful message
+            logger.exception("Error checking Trello connection.")
+            raise RuntimeError(f"Trello connection check failed: {e}")
 
     def _run(self, action: str, params: dict):
+        """
+        Execute a composio action using the configured entity id.
+        Let underlying SDK raise for network/permission problems so callers
+        can handle them accordingly.
+        """
         return self.client.execute_action(
             action=action,
             params=params,
@@ -62,7 +125,10 @@ class MeetingTaskConverter:
             "TRELLO_ADD_BOARDS_LISTS_BY_ID_BOARD",
             {"idBoard": board_id, "name": name}
         )
-        return self._extract_id(res)
+        list_id = self._extract_id(res)
+        if not list_id:
+            raise RuntimeError("Failed to create or find Trello list")
+        return list_id
 
     def get_or_create_card(self, list_id: str, name: str) -> str:
         cards = self._run(
@@ -78,7 +144,10 @@ class MeetingTaskConverter:
             "TRELLO_ADD_LISTS_CARDS_BY_ID_LIST",
             {"idList": list_id, "name": name}
         )
-        return self._extract_id(res)
+        card_id = self._extract_id(res)
+        if not card_id:
+            raise RuntimeError("Failed to create or find Trello card")
+        return card_id
 
     def get_or_create_checklist(self, card_id: str, name="Tasks") -> str:
         lists = self._run(
@@ -94,7 +163,10 @@ class MeetingTaskConverter:
             "TRELLO_ADD_CARDS_CHECKLISTS_BY_ID_CARD",
             {"idCard": card_id, "name": name}
         )
-        return self._extract_id(res)
+        checklist_id = self._extract_id(res)
+        if not checklist_id:
+            raise RuntimeError("Failed to create or find Trello checklist")
+        return checklist_id
 
     def add_check_item(
         self,
@@ -106,7 +178,7 @@ class MeetingTaskConverter:
         if deadline:
             task_text = f"{task_text} (Due: {deadline})"
 
-        self._run(
+        return self._run(
             "TRELLO_ADD_CARDS_CHECKLIST_CHECK_ITEM_BY_ID_CARD_BY_ID_CHECKLIST",
             {
                 "idCard": card_id,
@@ -146,10 +218,12 @@ class MeetingTaskConverter:
             }
 
         except Exception as e:
+            logger.exception("Error while converting action item to Trello task.")
             return {
                 "success": False,
                 "error": str(e)
             }
+
 
 
 
