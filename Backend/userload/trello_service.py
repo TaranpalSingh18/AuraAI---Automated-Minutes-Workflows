@@ -12,9 +12,8 @@ def set_database(db):
 
 class UserLoadTrelloService:
     """
-    Direct Trello API service (NO Composio)
-    Fetch checklist-based tasks from "{User}'s Todo" card
-    Render-safe, production-ready
+    Fetch ALL checklist tasks from ALL cards on a Trello board
+    (NO card name assumptions)
     """
 
     BASE_URL = "https://api.trello.com/1"
@@ -25,7 +24,7 @@ class UserLoadTrelloService:
 
         if not self.trello_key or not self.trello_token:
             raise RuntimeError(
-                "TRELLO_API_KEY and TRELLO_API_TOKEN must be set in environment variables"
+                "TRELLO_API_KEY and TRELLO_API_TOKEN must be set"
             )
 
         if not board_id:
@@ -33,79 +32,59 @@ class UserLoadTrelloService:
 
         self.board_id = board_id
 
-    # ---------- INTERNAL REQUEST ----------
-
-    def _request(
-        self,
-        method: str,
-        path: str,
-        params: Optional[dict] = None
-    ):
+    # ---------- INTERNAL ----------
+    def _request(self, method: str, path: str, params: Optional[dict] = None):
         params = params or {}
-        params["key"] = self.trello_key
-        params["token"] = self.trello_token
+        params.update({
+            "key": self.trello_key,
+            "token": self.trello_token
+        })
 
         url = f"{self.BASE_URL}{path}"
-
-        res = requests.request(
-            method=method,
-            url=url,
-            params=params,
-            timeout=20
-        )
+        res = requests.request(method, url, params=params, timeout=15)
 
         if res.status_code >= 400:
-            raise RuntimeError(
-                f"Trello API error {res.status_code}: {res.text}"
-            )
+            raise RuntimeError(f"Trello API error {res.status_code}: {res.text}")
 
         return res.json()
 
-    # ---------- CORE METHODS ----------
-
+    # ---------- CORE ----------
     def get_board_cards(self) -> List[Dict]:
-        """
-        Fetch all cards on the board with checklists
-        """
         return self._request(
             "GET",
             f"/boards/{self.board_id}/cards",
             {
-                "fields": "id,name,idList,closed",
+                "fields": "id,name,closed",
                 "checklists": "all"
             }
         )
 
-    def get_user_tasks(self, user_name: str) -> List[Dict]:
+    def get_all_tasks(self) -> List[Dict]:
         """
-        Extract checklist items from "{user}'s Todo" card
+        Return ALL checklist items from ALL cards
         """
         cards = self.get_board_cards()
-
-        todo_card_name = f"{user_name}'s Todo"
-
-        todo_card = next(
-            (
-                c for c in cards
-                if c.get("name") == todo_card_name and not c.get("closed", False)
-            ),
-            None
-        )
-
-        if not todo_card:
-            return []
-
         tasks = []
 
-        for checklist in todo_card.get("checklists", []):
-            checklist_id = checklist.get("id")
-            for item in checklist.get("checkItems", []):
-                tasks.append({
-                    "id": item.get("id"),
-                    "name": item.get("name"),
-                    "state": item.get("state"),
-                    "checklist_id": checklist_id
-                })
+        for card in cards:
+            if card.get("closed"):
+                continue
+
+            card_name = card.get("name", "")
+            card_id = card.get("id")
+
+            for checklist in card.get("checklists", []):
+                checklist_id = checklist.get("id")
+
+                for item in checklist.get("checkItems", []):
+                    tasks.append({
+                        "id": item.get("id"),
+                        "name": item.get("name"),
+                        "state": item.get("state"),
+                        "card_id": card_id,
+                        "card_name": card_name,
+                        "checklist_id": checklist_id
+                    })
 
         return tasks
 
@@ -116,9 +95,6 @@ class UserLoadTrelloService:
         checkitem_id: str,
         completed: bool
     ) -> bool:
-        """
-        Mark checklist item complete / incomplete
-        """
         state = "complete" if completed else "incomplete"
 
         self._request(
@@ -128,7 +104,6 @@ class UserLoadTrelloService:
         )
 
         return True
-
 
 
 
