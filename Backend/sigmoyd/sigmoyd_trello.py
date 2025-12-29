@@ -1,32 +1,25 @@
-
 # sigmoyd_trello.py
 """
-Production-ready Composio + Trello read helper
-Safe for Render / FastAPI / async servers
+Production-ready Trello READ helper (NO Composio)
+Render / FastAPI safe
 """
 
 from __future__ import annotations
 import os
 import re
-import json
 import ast
 import asyncio
 import logging
 from typing import Any, Dict, Optional, List
-from datetime import datetime, timedelta
+from datetime import datetime
 import pytz
+import httpx
 
 # ---------- logging ----------
-logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 # ---------- timezone ----------
-try:
-    from zoneinfo import ZoneInfo
-    HAVE_ZONEINFO = True
-except Exception:
-    HAVE_ZONEINFO = False
-
 DEFAULT_TIMEZONE = "Asia/Kolkata"
 
 # ---------- LLM ----------
@@ -35,218 +28,159 @@ try:
 except Exception:
     ChatGoogleGenerativeAI = None
 
-# ---------- Composio ----------
-ComposioToolSet = None
-try:
-    from composio.tools.toolset import ComposioToolSet
-except Exception:
-    try:
-        from composio import ComposioToolSet
-    except Exception:
-        ComposioToolSet = None
-
-COMPOSIO_API_KEY = os.getenv("COMPOSIO_API_KEY")
+# ---------- ENV ----------
+TRELLO_KEY = os.getenv("TRELLO_API_KEY")
+TRELLO_TOKEN = os.getenv("TRELLO_API_TOKEN")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+
+TRELLO_BASE = "https://api.trello.com/1"
 
 
 def get_llm(api_key: str):
-    if not api_key:
+    if not api_key or ChatGoogleGenerativeAI is None:
         return None
-    if ChatGoogleGenerativeAI is None:
-        raise RuntimeError("langchain_google_genai not installed")
-    return ChatGoogleGenerativeAI(model="gemini-2.5-flash", api_key=api_key)
+    return ChatGoogleGenerativeAI(
+        model="gemini-2.5-flash",
+        api_key=api_key
+    )
 
 
 def _iso_to_aware(dt: Optional[str]) -> Optional[datetime]:
     if not dt:
         return None
-    s = dt.replace("Z", "+00:00")
     try:
-        d = datetime.fromisoformat(s)
+        d = datetime.fromisoformat(dt.replace("Z", "+00:00"))
+        tz = pytz.timezone(DEFAULT_TIMEZONE)
+        return d.astimezone(tz)
     except Exception:
         return None
-    tz = ZoneInfo(DEFAULT_TIMEZONE) if HAVE_ZONEINFO else pytz.timezone(DEFAULT_TIMEZONE)
-    if d.tzinfo is None:
-        d = d.replace(tzinfo=pytz.UTC)
-    return d.astimezone(tz)
 
 
 class SigmoydTrello:
-    def __init__(self, composio_api_key: Optional[str] = None, gemini_api_key: Optional[str] = None):
-        self.composio_api_key = composio_api_key or COMPOSIO_API_KEY
-        self.gemini_api_key = gemini_api_key or GEMINI_API_KEY
-        self._toolset = None
-        self._llm = None
+    def __init__(self, gemini_api_key: Optional[str] = None):
+        if not TRELLO_KEY or not TRELLO_TOKEN:
+            raise RuntimeError("TRELLO_API_KEY or TRELLO_API_TOKEN missing")
 
-    @property
-    def toolset(self):
-        if self._toolset is None:
-            if ComposioToolSet is None:
-                raise RuntimeError("Composio SDK not installed")
-            if not self.composio_api_key:
-                raise RuntimeError("COMPOSIO_API_KEY missing")
-            self._toolset = ComposioToolSet(api_key=self.composio_api_key)
-        return self._toolset
+        self.key = TRELLO_KEY
+        self.token = TRELLO_TOKEN
+        self.llm = get_llm(gemini_api_key or GEMINI_API_KEY)
 
-    @property
-    def llm(self):
-        if self._llm is None and self.gemini_api_key:
-            self._llm = get_llm(self.gemini_api_key)
-        return self._llm
+    # ---------- HTTP ----------
+    async def _get(self, path: str, params: dict):
+        params.update({"key": self.key, "token": self.token})
+        async with httpx.AsyncClient(timeout=20) as client:
+            r = await client.get(f"{TRELLO_BASE}/{path}", params=params)
+            r.raise_for_status()
+            return r.json()
 
-    # ---------- SAFE EXECUTOR ----------
-    async def _exec_action(self, action: str, params: Dict[str, Any]):
-        try:
-            return await asyncio.to_thread(
-                self.toolset.execute_action,
-                action=action,
-                params=params,
-            )
-        except Exception as e:
-            logger.warning("Composio action %s failed: %s", action, e)
-            return None
-
+    # ---------- LLM ----------
     async def _llm_invoke(self, prompt: str) -> str:
         if not self.llm:
-            raise RuntimeError("LLM not initialized")
+            raise RuntimeError("Gemini API key missing")
         resp = await asyncio.to_thread(self.llm.invoke, prompt)
         return (resp.content or "").strip()
 
-    # ---------- FUNCTIONS ----------
+    # ---------- LOGIC ----------
     async def get_task_functions(self, query: str) -> List[str]:
         text = await self._llm_invoke(
-            f"""Return Python list of function names for query:
-functions = ["get_list_content","get_deadline","get_all_deadlines","get_checklist","get_all_actions"]
+            f"""Return Python list only.
+Allowed:
+["get_all_actions","get_deadline","get_all_deadlines"]
+
 Query: {query}
 """
         )
         try:
             val = ast.literal_eval(text)
-            return list(val) if isinstance(val, (list, tuple)) else []
+            return list(val) if isinstance(val, list) else []
         except Exception:
             return []
 
     async def get_board_id(self, query: str) -> Optional[str]:
-        m = re.search(r"(?:board[_\s-]*id|bid)\s*[:=]?\s*([A-Za-z0-9_\-:.]+)", query, re.I)
-        if m:
-            return m.group(1)
-        if self.llm:
-            out = await self._llm_invoke(f"Extract board id only: {query}")
-            m2 = re.search(r"([A-Za-z0-9_\-:.]+)", out)
-            return m2.group(1) if m2 else None
-        return None
+        m = re.search(r"board[_\s-]*id\s*[:=]?\s*([A-Za-z0-9]+)", query, re.I)
+        return m.group(1) if m else None
 
-    async def get_all_actions(self, idBoard: str) -> str:
-        resp = await self._exec_action("TRELLO_GET_BOARDS_CARDS_BY_ID_BOARD", {"idBoard": idBoard})
-        cards = resp if isinstance(resp, list) else (resp or {}).get("data", {}).get("details", [])
-        lines = [f"Board ID: {idBoard}"]
-        for c in cards or []:
-            lines.append(f"- {c.get('name')} | Due: {c.get('due')}")
-        return "\n".join(lines)
+    async def get_cards(self, board_id: str):
+        return await self._get(
+            f"boards/{board_id}/cards",
+            {"fields": "name,due"}
+        )
 
-    async def get_deadline(self, idBoard: str, query: str) -> Optional[str]:
+    async def get_all_actions(self, board_id: str) -> str:
+        cards = await self.get_cards(board_id)
+        out = [f"Board ID: {board_id}"]
+        for c in cards:
+            out.append(f"- {c['name']} | Due: {c.get('due')}")
+        return "\n".join(out)
+
+    async def get_all_deadlines(self, board_id: str) -> str:
+        cards = await self.get_cards(board_id)
+        items = []
+        for c in cards:
+            d = _iso_to_aware(c.get("due"))
+            if d:
+                items.append((d, c["name"]))
+        items.sort(key=lambda x: x[0])
+        return "\n".join(f"{n} → {d}" for d, n in items)
+
+    async def get_deadline(self, board_id: str, query: str) -> Optional[str]:
         card_name = await self._llm_invoke(f"Extract card name only: {query}")
-        resp = await self._exec_action("TRELLO_GET_BOARDS_CARDS_BY_ID_BOARD", {"idBoard": idBoard})
-        cards = resp if isinstance(resp, list) else (resp or {}).get("data", {}).get("details", [])
+        cards = await self.get_cards(board_id)
         now = _iso_to_aware(datetime.utcnow().isoformat())
         out = []
-        for c in cards or []:
-            if card_name.lower() in (c.get("name") or "").lower():
+        for c in cards:
+            if card_name.lower() in c["name"].lower():
                 due = _iso_to_aware(c.get("due"))
                 if due:
                     out.append(f"{c['name']} → {due} ({due - now})")
         return "\n".join(out) if out else None
 
-    async def get_all_deadlines(self, idBoard: str) -> str:
-        resp = await self._exec_action("TRELLO_GET_BOARDS_CARDS_BY_ID_BOARD", {"idBoard": idBoard})
-        cards = resp if isinstance(resp, list) else (resp or {}).get("data", {}).get("details", [])
-        items = []
-        for c in cards or []:
-            due = _iso_to_aware(c.get("due"))
-            if due:
-                items.append((due, c["name"]))
-        items.sort(key=lambda x: x[0])
-        return "\n".join(f"{n} → {d}" for d, n in items)
 
-    async def get_checklist(self, idBoard: str, query: str) -> Dict[str, Any]:
-        resp = await self._exec_action("TRELLO_GET_BOARDS_CHECKLISTS_BY_ID_BOARD", {"idBoard": idBoard})
-        return {"raw": resp}
-# import asyncio
-# from typing import Dict, Any
+# ---------- MAIN ENTRY ----------
+async def process_query(
+    query: str,
+    gemini_api_key: Optional[str] = None
+) -> Dict[str, Any]:
+
+    try:
+        sig = SigmoydTrello(gemini_api_key)
+
+        board_id = await sig.get_board_id(query)
+        if not board_id:
+            return {"success": False, "output": "", "error": "Board ID missing"}
+
+        fns = await sig.get_task_functions(query)
+        if not fns:
+            return {"success": False, "output": "", "error": "Could not classify query"}
+
+        outputs = []
+
+        for fn in fns:
+            if fn == "get_all_actions":
+                outputs.append(await sig.get_all_actions(board_id))
+            elif fn == "get_all_deadlines":
+                outputs.append(await sig.get_all_deadlines(board_id))
+            elif fn == "get_deadline":
+                txt = await sig.get_deadline(board_id, query)
+                if txt:
+                    outputs.append(txt)
+
+        return {
+            "success": True,
+            "output": "\n\n".join(outputs) or "No data",
+            "error": None
+        }
+
+    except Exception as e:
+        logger.exception("Sigmoyd error")
+        return {
+            "success": False,
+            "output": "",
+            "error": str(e)
+        }
 
 
-    async def process_query(
-        query: str,
-        composio_api_key: str | None = None,
-        gemini_api_key: str | None = None
-    ) -> Dict[str, Any]:
-        """
-        Production-safe Sigmoyd Trello query processor.
-        Read-only operations only.
-        """
-    
-        try:
-            sig = SigmoydTrello(
-                composio_api_key=composio_api_key,
-                gemini_api_key=gemini_api_key
-            )
-    
-            # 1️⃣ detect board id
-            board_id = await sig.get_board_id(query)
-            if not board_id:
-                return {
-                    "success": False,
-                    "output": "",
-                    "error": "Could not detect Trello board ID from query"
-                }
-    
-            # 2️⃣ ask LLM what functions are needed
-            functions = await sig.get_task_functions(query)
-            if not functions:
-                return {
-                    "success": False,
-                    "output": "",
-                    "error": "Could not classify query intent"
-                }
-    
-            outputs = []
-    
-            # 3️⃣ execute functions safely
-            for fn in functions:
-                if fn == "get_all_actions":
-                    text = await sig.get_all_actions(board_id)
-                    outputs.append(text)
-    
-                elif fn == "get_deadline":
-                    text = await sig.get_deadline(board_id, query)
-                    if text:
-                        outputs.append(text)
-    
-                elif fn == "get_all_deadlines":
-                    text = await sig.get_all_deadlines(board_id)
-                    outputs.append(text)
-    
-                elif fn == "get_checklist":
-                    data = await sig.get_checklist(board_id, query)
-                    outputs.append(str(data))
-    
-                elif fn == "get_list_content":
-                    outputs.append("List content operation not enabled")
-    
-            final_output = "\n\n".join(o for o in outputs if o)
-    
-            return {
-                "success": True,
-                "output": final_output or "No data found",
-                "error": None
-            }
-    
-        except Exception as e:
-            return {
-                "success": False,
-                "output": "",
-                "error": str(e)
-            }
+
 
 
 # ---------- local test ----------
