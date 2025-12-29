@@ -1,176 +1,84 @@
-"""
-Meeting Task Converter Automation
-Converts meeting action items to Trello checklist items
-RENDER-SAFE VERSION (robust imports + helpful errors)
-"""
-
+import requests
 from typing import Optional, Dict, Any
-from datetime import datetime
-import json
-import re
-import logging
-
-logger = logging.getLogger(__name__)
-
-# --- Robust Composio import --- #
-_COMPOSIO_AVAILABLE = False
-ComposioClient = None
-NoItemsFound = Exception
-
-# Try multiple import paths so this module can be imported even if
-# the installed composio package exposes a different layout.
-try:
-    try:
-        # Preferred: composio exports ComposioClient at top-level
-        from composio import ComposioClient  # type: ignore
-        from composio.client.exceptions import NoItemsFound  # type: ignore
-    except Exception:
-        # Fallback: composio.client module exposes client class
-        from composio.client import ComposioClient  # type: ignore
-        from composio.client.exceptions import NoItemsFound  # type: ignore
-
-    _COMPOSIO_AVAILABLE = True
-    logger.debug("Composio SDK import successful.")
-except Exception as e:
-    # Keep module import-safe: do not raise here. Will raise on instantiation if used.
-    ComposioClient = None
-    NoItemsFound = Exception
-    _COMPOSIO_AVAILABLE = False
-    logger.warning(
-        "Composio SDK not importable in this environment. "
-        "MeetingTaskConverter will raise if instantiated. "
-        f"Import error: {e}"
-    )
 
 
 class MeetingTaskConverter:
-    """
-    Thin wrapper around Composio -> Trello actions.
+    BASE_URL = "https://api.trello.com/1"
 
-    NOTE: This class raises at instantiation time if the Composio SDK
-    is not available. This keeps module import safe (so e.g. uvicorn
-    can start even if the optional dependency is missing).
-    """
+    def __init__(self, trello_api_key: str, trello_token: str):
+        if not trello_api_key or not trello_token:
+            raise ValueError("Trello API key and token are required")
 
-    def __init__(self, composio_api_key: str):
-        if not _COMPOSIO_AVAILABLE:
-            raise RuntimeError(
-                "Composio SDK is not available in this environment. "
-                "To enable automations install the correct Composio package "
-                "or deploy with the service that provides the Composio SDK. "
-                "If you do not need Trello automations for this deployment, "
-                "avoid instantiating MeetingTaskConverter."
-            )
+        self.key = trello_api_key
+        self.token = trello_token
 
-        if not composio_api_key or not composio_api_key.strip():
-            raise ValueError("Composio API key is required")
+    def _req(self, method: str, endpoint: str, params=None):
+        if params is None:
+            params = {}
 
-        composio_api_key = composio_api_key.strip()
+        params["key"] = self.key
+        params["token"] = self.token
 
-        try:
-            self.client = ComposioClient(api_key=composio_api_key)
-        except Exception as e:
-            logger.exception("Failed to instantiate ComposioClient.")
-            raise RuntimeError(f"Failed to initialize Composio client: {e}")
+        url = f"{self.BASE_URL}{endpoint}"
+        r = requests.request(method, url, params=params, timeout=15)
 
-        # Get entity
-        try:
-            self.entity = self.client.get_entity()
-        except Exception as e:
-            logger.exception("Failed to get entity from Composio client.")
-            raise RuntimeError(f"Failed to get entity: {e}")
+        if not r.ok:
+            raise RuntimeError(f"Trello API error {r.status_code}: {r.text}")
 
-        # Ensure Trello is connected
-        try:
-            conn = self.entity.get_connection(app="trello")
-            if not conn or getattr(conn, "status", None) != "ACTIVE":
-                raise RuntimeError("Trello is not connected (connection not ACTIVE)")
-        except NoItemsFound:
-            raise RuntimeError("Trello is not connected (NoItemsFound)")
-        except Exception as e:
-            # If the underlying SDK raises something else, surface a helpful message
-            logger.exception("Error checking Trello connection.")
-            raise RuntimeError(f"Trello connection check failed: {e}")
+        return r.json()
 
-    def _run(self, action: str, params: dict):
-        """
-        Execute a composio action using the configured entity id.
-        Let underlying SDK raise for network/permission problems so callers
-        can handle them accordingly.
-        """
-        return self.client.execute_action(
-            action=action,
-            params=params,
-            entity_id=self.entity.id
-        )
-
-    def _extract_id(self, obj) -> Optional[str]:
-        if isinstance(obj, dict):
-            return obj.get("id")
-        if isinstance(obj, list) and obj and isinstance(obj[0], dict):
-            return obj[0].get("id")
-        return None
+    # ---------- LIST ----------
 
     def get_or_create_list(self, board_id: str, name: str) -> str:
-        lists = self._run(
-            "TRELLO_GET_BOARDS_LISTS_BY_ID_BOARD",
-            {"idBoard": board_id}
-        ) or []
+        lists = self._req("GET", f"/boards/{board_id}/lists")
 
         for lst in lists:
-            if lst.get("name") == name and not lst.get("closed"):
+            if lst["name"] == name and not lst["closed"]:
                 return lst["id"]
 
-        res = self._run(
-            "TRELLO_ADD_BOARDS_LISTS_BY_ID_BOARD",
-            {"idBoard": board_id, "name": name}
+        lst = self._req(
+            "POST",
+            f"/boards/{board_id}/lists",
+            {"name": name}
         )
-        list_id = self._extract_id(res)
-        if not list_id:
-            raise RuntimeError("Failed to create or find Trello list")
-        return list_id
+        return lst["id"]
+
+    # ---------- CARD ----------
 
     def get_or_create_card(self, list_id: str, name: str) -> str:
-        cards = self._run(
-            "TRELLO_GET_LISTS_CARDS_BY_ID_LIST",
-            {"idList": list_id}
-        ) or []
+        cards = self._req("GET", f"/lists/{list_id}/cards")
 
         for card in cards:
-            if card.get("name") == name and not card.get("closed"):
+            if card["name"] == name and not card["closed"]:
                 return card["id"]
 
-        res = self._run(
-            "TRELLO_ADD_LISTS_CARDS_BY_ID_LIST",
+        card = self._req(
+            "POST",
+            "/cards",
             {"idList": list_id, "name": name}
         )
-        card_id = self._extract_id(res)
-        if not card_id:
-            raise RuntimeError("Failed to create or find Trello card")
-        return card_id
+        return card["id"]
+
+    # ---------- CHECKLIST ----------
 
     def get_or_create_checklist(self, card_id: str, name="Tasks") -> str:
-        lists = self._run(
-            "TRELLO_GET_CARDS_CHECKLISTS_BY_ID_CARD",
-            {"idCard": card_id}
-        ) or []
+        checklists = self._req("GET", f"/cards/{card_id}/checklists")
 
-        for cl in lists:
-            if cl.get("name") == name:
+        for cl in checklists:
+            if cl["name"] == name:
                 return cl["id"]
 
-        res = self._run(
-            "TRELLO_ADD_CARDS_CHECKLISTS_BY_ID_CARD",
-            {"idCard": card_id, "name": name}
+        cl = self._req(
+            "POST",
+            f"/cards/{card_id}/checklists",
+            {"name": name}
         )
-        checklist_id = self._extract_id(res)
-        if not checklist_id:
-            raise RuntimeError("Failed to create or find Trello checklist")
-        return checklist_id
+        return cl["id"]
+
+    # ---------- CHECK ITEM ----------
 
     def add_check_item(
         self,
-        card_id: str,
         checklist_id: str,
         task_text: str,
         deadline: Optional[str] = None
@@ -178,14 +86,13 @@ class MeetingTaskConverter:
         if deadline:
             task_text = f"{task_text} (Due: {deadline})"
 
-        return self._run(
-            "TRELLO_ADD_CARDS_CHECKLIST_CHECK_ITEM_BY_ID_CARD_BY_ID_CHECKLIST",
-            {
-                "idCard": card_id,
-                "idChecklist": checklist_id,
-                "name": task_text
-            }
+        self._req(
+            "POST",
+            f"/checklists/{checklist_id}/checkItems",
+            {"name": task_text}
         )
+
+    # ---------- MAIN ----------
 
     def convert_action_item_to_task(
         self,
@@ -202,12 +109,7 @@ class MeetingTaskConverter:
             card_id = self.get_or_create_card(list_id, list_name)
             checklist_id = self.get_or_create_checklist(card_id)
 
-            self.add_check_item(
-                card_id,
-                checklist_id,
-                task_text,
-                deadline
-            )
+            self.add_check_item(checklist_id, task_text, deadline)
 
             return {
                 "success": True,
@@ -218,11 +120,12 @@ class MeetingTaskConverter:
             }
 
         except Exception as e:
-            logger.exception("Error while converting action item to Trello task.")
             return {
                 "success": False,
                 "error": str(e)
             }
+
+
 
 
 
