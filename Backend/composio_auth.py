@@ -68,7 +68,7 @@ Composio authentication service - handles OAuth connections for Trello
 #     class NoItemsFound(Exception):
 #         pass
 from typing import Optional, Dict, Any
-from composio import ComposioToolSet
+from composio.tools.toolset import ComposioToolSet
 from composio.client.exceptions import NoItemsFound
 
 
