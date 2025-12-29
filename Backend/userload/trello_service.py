@@ -1,110 +1,112 @@
-"""
-UserLoad Trello service – PRODUCTION READY
-Fetches and manages user tasks from Trello via Composio
-"""
-
 import os
-import json
-import re
-from typing import List, Dict, Any, Optional
+import requests
+from typing import List, Dict, Optional
 
-from composio.tools.toolset import ComposioToolSet
-from langchain_google_genai import ChatGoogleGenerativeAI
+# --- Database hook (set from main) ---
+database = None
+
+def set_database(db):
+    global database
+    database = db
 
 
 class UserLoadTrelloService:
-    def __init__(self, composio_api_key: Optional[str] = None, gemini_api_key: Optional[str] = None):
-        self.composio_api_key = composio_api_key or os.getenv("COMPOSIO_API_KEY")
-        self.gemini_api_key = gemini_api_key or os.getenv("GEMINI_API_KEY")
+    """
+    Direct Trello API service (NO composio)
+    Render-safe, production-ready
+    """
 
-        if not self.composio_api_key:
-            raise RuntimeError("COMPOSIO_API_KEY not set")
+    def __init__(self, board_id: str):
+        self.trello_key = os.getenv("TRELLO_API_KEY")
+        self.trello_token = os.getenv("TRELLO_API_TOKEN")
 
-        if not self.gemini_api_key:
-            raise RuntimeError("GEMINI_API_KEY not set")
+        if not self.trello_key or not self.trello_token:
+            raise RuntimeError(
+                "TRELLO_API_KEY and TRELLO_API_TOKEN must be set in environment variables"
+            )
 
-        self.toolset = ComposioToolSet(api_key=self.composio_api_key)
-        self.llm = ChatGoogleGenerativeAI(
-            model="gemini-2.5-flash",
-            api_key=self.gemini_api_key,
-            timeout=30,
+        if not board_id:
+            raise ValueError("Trello board_id is required")
+
+        self.board_id = board_id
+        self.base_url = "https://api.trello.com/1"
+
+    # ---------- INTERNAL HELPERS ----------
+
+    def _request(
+        self,
+        method: str,
+        path: str,
+        params: Optional[dict] = None
+    ):
+        params = params or {}
+        params.update({
+            "key": self.trello_key,
+            "token": self.trello_token
+        })
+
+        url = f"{self.base_url}{path}"
+
+        res = requests.request(
+            method=method,
+            url=url,
+            params=params,
+            timeout=15
         )
 
-    # -------------------- INTERNAL HELPERS --------------------
-
-    def _safe_execute(self, action: str, params: dict) -> Optional[Any]:
-        try:
-            return self.toolset.execute_action(
-                action=action,
-                params=params,
-                timeout=20,
+        if res.status_code >= 400:
+            raise RuntimeError(
+                f"Trello API error {res.status_code}: {res.text}"
             )
-        except Exception:
-            return None
 
-    @staticmethod
-    def _extract_list(res: Any) -> List[dict]:
-        if isinstance(res, list):
-            return res
-        if isinstance(res, dict):
-            for key in ("data", "details", "lists", "cards", "checklists", "items"):
-                val = res.get(key)
-                if isinstance(val, list):
-                    return val
-            if "details" in res.get("data", {}):
-                return res["data"]["details"]
-        return []
+        return res.json()
 
-    # -------------------- CORE METHODS --------------------
+    # ---------- CORE API METHODS ----------
 
-    def get_user_todo_card_id(self, board_id: str, user_name: str) -> Optional[str]:
-        cards = self._extract_list(
-            self._safe_execute(
-                "TRELLO_GET_BOARDS_CARDS_BY_ID_BOARD",
-                {"idBoard": board_id}
-            )
+    def get_board_cards(self) -> List[Dict]:
+        """
+        Get all cards on the board
+        """
+        return self._request(
+            "GET",
+            f"/boards/{self.board_id}/cards",
+            {
+                "fields": "id,name,idList,closed",
+                "checklists": "all"
+            }
         )
 
-        expected_name = f"{user_name}'s Todo"
+    def get_user_tasks(
+        self,
+        user_name: str
+    ) -> List[Dict]:
+        """
+        Find checklist items from card named "{user}'s Todo"
+        """
+        cards = self.get_board_cards()
 
-        for card in cards:
-            if card.get("name") == expected_name and not card.get("closed"):
-                return card.get("id")
+        todo_card_name = f"{user_name}'s Todo"
 
-        return None
+        target_card = next(
+            (
+                c for c in cards
+                if c.get("name") == todo_card_name and not c.get("closed", False)
+            ),
+            None
+        )
 
-    def get_user_tasks(self, board_id: str, user_name: str) -> List[Dict[str, Any]]:
-        card_id = self.get_user_todo_card_id(board_id, user_name)
-        if not card_id:
+        if not target_card:
             return []
 
-        checklists = self._extract_list(
-            self._safe_execute(
-                "TRELLO_GET_CARDS_CHECKLISTS_BY_ID_CARD",
-                {"idCard": card_id}
-            )
-        )
-
-        tasks: List[Dict[str, Any]] = []
-
-        for checklist in checklists:
+        tasks = []
+        for checklist in target_card.get("checklists", []):
             checklist_id = checklist.get("id")
-            if not checklist_id:
-                continue
-
-            items = self._extract_list(
-                self._safe_execute(
-                    "TRELLO_GET_CARDS_CHECKLIST_CHECK_ITEMS_BY_ID_CARD_BY_ID_CHECKLIST",
-                    {"idCard": card_id, "idChecklist": checklist_id}
-                )
-            )
-
-            for item in items:
+            for item in checklist.get("checkItems", []):
                 tasks.append({
                     "id": item.get("id"),
-                    "name": item.get("name", ""),
-                    "state": item.get("state", "incomplete"),
-                    "checklist_id": checklist_id,
+                    "name": item.get("name"),
+                    "state": item.get("state"),
+                    "checklist_id": checklist_id
                 })
 
         return tasks
@@ -116,80 +118,18 @@ class UserLoadTrelloService:
         checkitem_id: str,
         completed: bool
     ) -> bool:
-        res = self._safe_execute(
-            "TRELLO_UPDATE_CARDS_CHECKLIST_CHECK_ITEMS_BY_ID_CARD_BY_ID_CHECKLIST_BY_ID_CHECKITEM",
-            {
-                "idCard": card_id,
-                "idChecklist": checklist_id,
-                "idCheckItem": checkitem_id,
-                "state": "complete" if completed else "incomplete",
-            }
-        )
-        return res is not None
+        """
+        Mark checklist item complete/incomplete
+        """
+        state = "complete" if completed else "incomplete"
 
-    # -------------------- NLP PARSER --------------------
-
-    def parse_natural_language_task_update(
-        self,
-        query: str,
-        tasks: List[Dict[str, Any]]
-    ) -> List[Dict[str, Any]]:
-
-        if not tasks:
-            return []
-
-        task_context = "\n".join(
-            f"{i+1}. {t['name']} (ID: {t['id']}, Status: {t['state']})"
-            for i, t in enumerate(tasks)
+        self._request(
+            "PUT",
+            f"/cards/{card_id}/checklist/{checklist_id}/checkItem/{checkitem_id}",
+            {"state": state}
         )
 
-        prompt = f"""
-You manage task updates.
-
-Tasks:
-{task_context}
-
-User query:
-{query}
-
-Respond ONLY with valid JSON.
-Format:
-[
-  {{"task_id": "...", "action": "check"}},
-  {{"task_id": "...", "action": "uncheck"}}
-]
-
-If no match, return [].
-"""
-
-        response = self.llm.invoke(prompt)
-        text = response.content.strip()
-
-        text = re.sub(r"^```json", "", text)
-        text = re.sub(r"```$", "", text)
-
-        try:
-            actions = json.loads(text)
-        except Exception:
-            return []
-
-        results = []
-        for act in actions if isinstance(actions, list) else []:
-            tid = act.get("task_id")
-            action = act.get("action")
-            if action not in {"check", "uncheck"}:
-                continue
-
-            task = next((t for t in tasks if t["id"] == tid), None)
-            if task:
-                results.append({
-                    "task_id": task["id"],
-                    "checklist_id": task["checklist_id"],
-                    "action": action,
-                })
-
-        return results
-
+        return True
 
 
 
