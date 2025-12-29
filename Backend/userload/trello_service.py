@@ -2,7 +2,7 @@ import os
 import requests
 from typing import List, Dict, Optional
 
-# --- Database hook (set from main) ---
+# --- Database hook (set from main.py if needed) ---
 database = None
 
 def set_database(db):
@@ -12,9 +12,12 @@ def set_database(db):
 
 class UserLoadTrelloService:
     """
-    Direct Trello API service (NO composio)
+    Direct Trello API service (NO Composio)
+    Fetch checklist-based tasks from "{User}'s Todo" card
     Render-safe, production-ready
     """
+
+    BASE_URL = "https://api.trello.com/1"
 
     def __init__(self, board_id: str):
         self.trello_key = os.getenv("TRELLO_API_KEY")
@@ -26,12 +29,11 @@ class UserLoadTrelloService:
             )
 
         if not board_id:
-            raise ValueError("Trello board_id is required")
+            raise ValueError("board_id is required")
 
         self.board_id = board_id
-        self.base_url = "https://api.trello.com/1"
 
-    # ---------- INTERNAL HELPERS ----------
+    # ---------- INTERNAL REQUEST ----------
 
     def _request(
         self,
@@ -40,18 +42,16 @@ class UserLoadTrelloService:
         params: Optional[dict] = None
     ):
         params = params or {}
-        params.update({
-            "key": self.trello_key,
-            "token": self.trello_token
-        })
+        params["key"] = self.trello_key
+        params["token"] = self.trello_token
 
-        url = f"{self.base_url}{path}"
+        url = f"{self.BASE_URL}{path}"
 
         res = requests.request(
             method=method,
             url=url,
             params=params,
-            timeout=15
+            timeout=20
         )
 
         if res.status_code >= 400:
@@ -61,11 +61,11 @@ class UserLoadTrelloService:
 
         return res.json()
 
-    # ---------- CORE API METHODS ----------
+    # ---------- CORE METHODS ----------
 
     def get_board_cards(self) -> List[Dict]:
         """
-        Get all cards on the board
+        Fetch all cards on the board with checklists
         """
         return self._request(
             "GET",
@@ -76,18 +76,15 @@ class UserLoadTrelloService:
             }
         )
 
-    def get_user_tasks(
-        self,
-        user_name: str
-    ) -> List[Dict]:
+    def get_user_tasks(self, user_name: str) -> List[Dict]:
         """
-        Find checklist items from card named "{user}'s Todo"
+        Extract checklist items from "{user}'s Todo" card
         """
         cards = self.get_board_cards()
 
         todo_card_name = f"{user_name}'s Todo"
 
-        target_card = next(
+        todo_card = next(
             (
                 c for c in cards
                 if c.get("name") == todo_card_name and not c.get("closed", False)
@@ -95,11 +92,12 @@ class UserLoadTrelloService:
             None
         )
 
-        if not target_card:
+        if not todo_card:
             return []
 
         tasks = []
-        for checklist in target_card.get("checklists", []):
+
+        for checklist in todo_card.get("checklists", []):
             checklist_id = checklist.get("id")
             for item in checklist.get("checkItems", []):
                 tasks.append({
@@ -119,7 +117,7 @@ class UserLoadTrelloService:
         completed: bool
     ) -> bool:
         """
-        Mark checklist item complete/incomplete
+        Mark checklist item complete / incomplete
         """
         state = "complete" if completed else "incomplete"
 
