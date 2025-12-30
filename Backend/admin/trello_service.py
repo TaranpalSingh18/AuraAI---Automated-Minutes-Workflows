@@ -16,7 +16,6 @@ import logging
 import json
 import re
 from typing import List, Dict, Any, Optional
-from pathlib import Path
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
@@ -43,6 +42,7 @@ def _safe_json(obj) -> str:
 class AdminTrelloService:
     """
     Admin Trello service for creating/assigning tasks on a board.
+    Default behavior: create list "{User}'s Todo" and create a card with task_text inside it.
     """
 
     def __init__(self, board_id: Optional[str] = None, gemini_api_key: Optional[str] = None):
@@ -54,10 +54,13 @@ class AdminTrelloService:
         self.board_id = board_id
         self.timeout = 15
 
-        # initialize LLM if available and requested
         gemini_key = gemini_api_key or GEMINI_API_KEY
         if gemini_key and ChatGoogleGenerativeAI is not None:
-            self.llm = ChatGoogleGenerativeAI(model="gemini-2.5-flash", api_key=gemini_key)
+            try:
+                self.llm = ChatGoogleGenerativeAI(model="gemini-2.5-flash", api_key=gemini_key)
+            except Exception as e:
+                logger.warning("Could not init LLM: %s", e)
+                self.llm = None
         else:
             self.llm = None
 
@@ -87,34 +90,40 @@ class AdminTrelloService:
     def ensure_list_exists(self, list_name: str) -> str:
         """
         Return list id for list_name. Create if missing.
+        Case-insensitive match.
         """
         if not self.board_id:
             raise ValueError("board_id not set")
 
         lists = self.get_board_lists()
+        target = list_name.strip().lower()
         for lst in lists:
-            if lst.get("name", "").strip().lower() == list_name.strip().lower() and not lst.get("closed", False):
+            if lst.get("name", "").strip().lower() == target and not lst.get("closed", False):
                 logger.info("Found existing list '%s' -> %s", list_name, lst.get("id"))
                 return lst["id"]
 
-        # create list
+        # create list (POST /lists with idBoard)
         res = self._request("POST", f"/lists", {"idBoard": self.board_id, "name": list_name})
         list_id = res.get("id")
         logger.info("Created list '%s' -> %s", list_name, list_id)
         return list_id
 
-    def find_card_by_name(self, card_name: str) -> Optional[Dict[str, Any]]:
+    def get_list_cards(self, list_id: str) -> List[Dict[str, Any]]:
+        return self._request("GET", f"/lists/{list_id}/cards", {"fields": "id,name,closed,desc"})
+
+    def find_card_by_name_on_board(self, card_name: str) -> Optional[Dict[str, Any]]:
         """
-        Search board cards for exact or prefix name match. Returns card dict or None.
+        Search all board cards for exact or prefix name match. Returns card dict or None.
         """
         if not self.board_id:
             raise ValueError("board_id not set")
         cards = self._request("GET", f"/boards/{self.board_id}/cards", {"fields": "id,name,idList,closed"})
         for c in cards:
-            if not c.get("closed", False):
-                name = c.get("name", "")
-                if name.strip().lower() == card_name.strip().lower() or name.strip().lower().startswith(card_name.strip().lower()):
-                    return c
+            if c.get("closed", False):
+                continue
+            name = c.get("name", "")
+            if name.strip().lower() == card_name.strip().lower() or name.strip().lower().startswith(card_name.strip().lower()):
+                return c
         return None
 
     def create_card(self, list_id: str, name: str, desc: Optional[str] = None) -> Dict[str, Any]:
@@ -124,26 +133,6 @@ class AdminTrelloService:
             params["desc"] = desc
         card = self._request("POST", "/cards", params)
         logger.info("Created card '%s' -> %s", name, card.get("id"))
-        return card
-
-    def get_or_create_user_card(self, list_id: str, user_name: str) -> Dict[str, Any]:
-        """
-        Find a user's card in the provided list (matching "<user>'s Todo" or prefix),
-        or create one in that list.
-        Returns card dict.
-        """
-        # Search in list's cards
-        cards = self._request("GET", f"/lists/{list_id}/cards", {"fields": "id,name,closed"})
-        target_name = f"{user_name}'s Todo"
-        for c in cards:
-            if not c.get("closed", False):
-                name = c.get("name", "")
-                if name.strip().lower() == target_name.strip().lower() or name.strip().lower().startswith(user_name.strip().lower()):
-                    logger.info("Found existing user card: %s", c.get("id"))
-                    return c
-
-        # Create if not found
-        card = self.create_card(list_id, target_name, desc=f"Auto-created Todo card for {user_name}")
         return card
 
     # ---------------- Checklists / Items ----------------
@@ -159,71 +148,88 @@ class AdminTrelloService:
             if cl.get("name", "").strip().lower() == checklist_name.strip().lower():
                 return cl["id"]
 
-        # create checklist
-        # Trello supports POST /checklists with idCard param
+        # create checklist via POST /checklists
         res = self._request("POST", "/checklists", {"idCard": card_id, "name": checklist_name})
         return res.get("id")
 
-    def add_task_to_card(self, card_id: str, checklist_name: str, task_text: str) -> bool:
-        """
-        Add a checklist item to the named checklist on card; create checklist if needed.
-        """
-        if not card_id:
-            raise ValueError("card_id required")
-        checklist_id = self.ensure_checklist(card_id, checklist_name)
-        if not checklist_id:
-            raise RuntimeError("Failed to obtain checklist id")
+    def add_checklist_item(self, checklist_id: str, item_name: str) -> Dict[str, Any]:
+        res = self._request("POST", f"/checklists/{checklist_id}/checkItems", {"name": item_name})
+        logger.info("Added checklist item to %s", checklist_id)
+        return res
 
-        # add item
-        res = self._request(
-            "POST",
-            f"/checklists/{checklist_id}/checkItems",
-            {"name": task_text}
-        )
-        logger.info("Added checklist item to checklist %s on card %s", checklist_id, card_id)
-        return True
-
-    # ---------------- Convenience / Admin flows ----------------
+    # ---------------- High-level Admin flows ----------------
     def assign_task_to_user(
         self,
-        list_name: str,
         user_name: str,
-        checklist_name: str,
         task_text: str,
-        create_list_if_missing: bool = True
+        board_list_name: Optional[str] = None,
+        create_list_if_missing: bool = True,
+        create_card_per_task: bool = True,
+        add_to_checklist: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         High-level helper for admin:
-        - ensure list exists (optionally create)
-        - get or create user's card in that list
-        - add task to card's checklist
-        Returns dict with list_id, card_id, checklist_id, success message.
+        - if board_list_name provided, use it; else default to "{user_name}'s Todo"
+        - ensures list exists (optionally creates)
+        - creates a card for the task (default) or adds a checklist item to a user's card
+        - returns helpful metadata
+        Params:
+          user_name: "Vatsal" or "Vatsal Shah"
+          task_text: what to create
+          board_list_name: optional explicit list name to use
+          create_card_per_task: if True create a new card named task_text inside the list
+          add_to_checklist: if provided, create/get checklist of that name on the created/found card and add item
         """
         if not self.board_id:
             raise ValueError("board_id not set")
 
-        # ensure list
+        # by default use "<User>'s Todo" as list name
+        list_name = board_list_name or f"{user_name}'s Todo"
+
         if create_list_if_missing:
             list_id = self.ensure_list_exists(list_name)
         else:
-            # try to find list
             lists = self.get_board_lists()
             list_id = next((l["id"] for l in lists if l.get("name", "").strip().lower() == list_name.strip().lower()), None)
             if not list_id:
                 raise RuntimeError(f"List '{list_name}' not found and creation disabled")
 
-        card = self.get_or_create_user_card(list_id, user_name)
-        card_id = card.get("id")
+        # create a card for this task inside the user's list
+        if create_card_per_task:
+            card = self.create_card(list_id, task_text, desc=f"Assigned to {user_name}")
+            card_id = card.get("id")
+            result = {"success": True, "list_id": list_id, "card_id": card_id, "message": f"Created card in list '{list_name}'"}
+            # optionally add checklist item to the newly created card
+            if add_to_checklist:
+                checklist_id = self.ensure_checklist(card_id, add_to_checklist)
+                self.add_checklist_item(checklist_id, task_text)
+                result.update({"checklist_id": checklist_id})
+            return result
 
+        # alternative flow: find or create user's card inside the list and append checklist item
+        # user_card_name = f"{user_name}'s Todo"
+        cards = self.get_list_cards(list_id)
+        user_card = None
+        target_card_name = f"{user_name}'s Todo"
+        for c in cards:
+            name = c.get("name", "")
+            if name.strip().lower() == target_card_name.strip().lower() or name.strip().lower().startswith(user_name.strip().lower()):
+                user_card = c
+                break
+        if not user_card:
+            user_card = self.create_card(list_id, target_card_name, desc=f"Auto-created Todo card for {user_name}")
+
+        card_id = user_card.get("id")
+        checklist_name = add_to_checklist or "Tasks"
         checklist_id = self.ensure_checklist(card_id, checklist_name)
-        self.add_task_to_card(card_id, checklist_name, task_text)
+        self.add_checklist_item(checklist_id, task_text)
 
         return {
             "success": True,
             "list_id": list_id,
             "card_id": card_id,
             "checklist_id": checklist_id,
-            "message": f"Assigned task to {user_name} in list '{list_name}'"
+            "message": f"Added checklist item to card in list '{list_name}'"
         }
 
     # ---------------- Natural language parsing ----------------
@@ -236,10 +242,12 @@ class AdminTrelloService:
             return {"employee_name": "", "task_description": ""}
 
         users_text = ", ".join(available_users)
-        prompt = f"""You are a task assignment assistant. Extract employee name and the task to assign.
-Available team members: {users_text}
-User query: {query}
-Respond with JSON only: {{"employee_name":"", "task_description":""}}"""
+        prompt = (
+            f"You are a task assignment assistant. Extract employee name and the task to assign.\n"
+            f"Available team members: {users_text}\n"
+            f"User query: {query}\n\n"
+            f"Respond with JSON only: {{\"employee_name\":\"\", \"task_description\":\"\"}}"
+        )
         try:
             resp = self.llm.invoke(prompt)
             text = getattr(resp, "content", str(resp)) or ""
@@ -256,7 +264,7 @@ Respond with JSON only: {{"employee_name":"", "task_description":""}}"""
 
     def parse_task_assignment(self, query: str, available_users: List[str]) -> Dict[str, Any]:
         """
-        Public parser: tries LLM first (if available), then falls back to simple heuristics:
+        Public parser: tries LLM first (if available), then falls back to heuristics:
         - find user whose name appears in query (case-insensitive)
         - remaining text as task description
         Returns {employee_name, task_description}
@@ -268,26 +276,34 @@ Respond with JSON only: {{"employee_name":"", "task_description":""}}"""
             if result.get("employee_name") and result.get("task_description"):
                 return result
 
-        # fallback heuristics
         q_lower = query.lower()
         for user in available_users:
             if user.lower() in q_lower:
                 result["employee_name"] = user
-                # remove user name from query to form description
                 desc = re.sub(re.escape(user), "", query, flags=re.IGNORECASE).strip(" -,:;")
+                # try to remove words like 'assign' 'to' 'task' if present at start
+                desc = re.sub(r'^(assign|add|create|please)\b', '', desc, flags=re.IGNORECASE).strip()
                 result["task_description"] = desc or ""
                 return result
 
-        # last fallback: split by 'to' or ':' or '-' and pick fragments
+        # split by quotes to extract an explicit quoted task
+        m = re.search(r'"([^"]+)"', query)
+        if m:
+            result["task_description"] = m.group(1).strip()
+            # try to find name after "to"
+            m2 = re.search(r'to\s+([A-Za-z ]+)$', query, flags=re.IGNORECASE)
+            if m2:
+                result["employee_name"] = m2.group(1).strip()
+            return result
+
+        # fallback simple heuristics
         if " to " in q_lower:
             parts = re.split(r"\bto\b", query, maxsplit=1, flags=re.IGNORECASE)
-            result["task_description"] = parts[-1].strip()
-        elif ":" in query:
-            parts = query.split(":", 1)
-            result["task_description"] = parts[-1].strip()
-        else:
-            result["task_description"] = query.strip()
+            result["task_description"] = parts[0].strip()
+            result["employee_name"] = parts[-1].strip()
+            return result
 
+        result["task_description"] = query.strip()
         return result
 
 
@@ -298,8 +314,6 @@ database = None
 def set_database(db):
     global database
     database = db
-
-
 
 
 
