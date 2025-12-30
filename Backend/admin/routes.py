@@ -76,9 +76,9 @@ async def assign_task_to_employee(
     if not board_id:
         raise HTTPException(status_code=400, detail="Board ID is required (provide board_id or set workspace_id in Settings)")
 
-    # list name to place the user's card (default)
-    list_name = request.list_name or "To Do"
-    checklist_name = "Tasks"
+    # # list name to place the user's card (default)
+    # list_name = request.list_name or "To Do"
+    # checklist_name = "Tasks"
 
     try:
         # gather available users from DB to help parser match names (best-effort)
@@ -113,12 +113,14 @@ async def assign_task_to_employee(
         # perform the assignment on a thread (blocking network calls)
         result = await asyncio.to_thread(
             service.assign_task_to_user,
-            list_name,
-            employee_name,
-            checklist_name,
-            task_description,
-            True  # create list if missing
+            employee_name,        # user_name
+            task_description,     # task_text
+            None,                 # board_list_name → auto "{User}'s Todo"
+            True,                 # create list if missing
+            True,                 # create card per task
+            None                  # no checklist
         )
+
 
         return AssignTaskResponse(
             success=bool(result.get("success")),
