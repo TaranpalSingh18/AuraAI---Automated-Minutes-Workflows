@@ -62,6 +62,28 @@ async def assign_task_to_employee(
 
     if not request.query or not request.query.strip():
         raise HTTPException(status_code=400, detail="Query cannot be empty")
+    # -------- READ vs WRITE intent detection --------
+    READ_KEYWORDS = [
+        "what tasks",
+        "show tasks",
+        "list tasks",
+        "what is assigned",
+        "what are assigned",
+        "tasks assigned",
+    ]
+    
+    query_lower = request.query.lower()
+    is_read_query = any(k in query_lower for k in READ_KEYWORDS)
+    
+    if is_read_query:
+        return AssignTaskResponse(
+            success=True,
+            message="This is a read-only query. Use the Tasks page to view assigned tasks.",
+            employee_name=None,
+            task_description=None
+        )
+# ----------------------------------------------
+
 
     # ensure DB initialized (we use it to fetch user list for parser)
     if database is None:
