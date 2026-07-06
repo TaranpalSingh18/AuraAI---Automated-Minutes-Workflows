@@ -11,7 +11,7 @@ A professional SaaS-style web application that automates meeting minutes and tra
 - **Clean Interface** - Modern black & white aesthetic inspired by OpenAI
 
 
-![AuraAI Demo](assets/aura_ai.png)
+![AuraAI Demo](assets/Screenshot 2026-07-07 000632.png)
 
 
 Video Link: https://youtu.be/3sg3yXFlx8k?si=K0yFD0Tce0HjWUiI
